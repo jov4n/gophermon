@@ -1,6 +1,8 @@
 package gopherkon
 
 import (
+	"bytes"
+	"encoding/base64"
 	"fmt"
 	"image"
 	"image/draw"
@@ -8,41 +10,46 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 )
 
-// LayerType represents different types of sprite layers
-type LayerType string
+// CategoryType represents the type of category
+type CategoryType string
 
 const (
-	LayerBody       LayerType = "body"
-	LayerEars       LayerType = "ears"
-	LayerEyes       LayerType = "eyes"
-	LayerMouth      LayerType = "mouth"
-	LayerAccessory  LayerType = "accessory"
-	LayerHat        LayerType = "hat"
-	LayerClothing   LayerType = "clothing"
-	LayerTool       LayerType = "tool"
+	CategoryTypeBody       CategoryType = "body"
+	CategoryTypeEyes       CategoryType = "eyes"
+	CategoryTypeShirts     CategoryType = "shirts"
+	CategoryTypeHair       CategoryType = "hair"
+	CategoryTypeFacialHair CategoryType = "facial_hair"
+	CategoryTypeGlasses    CategoryType = "glasses"
+	CategoryTypeHats       CategoryType = "hats"
+	CategoryTypeExtras     CategoryType = "extras"
+	CategoryTypeUnknown    CategoryType = "unknown"
 )
 
-// AssetInfo represents information about a gopherkon asset
-type AssetInfo struct {
-	Path      string
-	LayerType LayerType
-	IsRare    bool
+// CategoryInfo represents a gopherize.me category with its order and features
+type CategoryInfo struct {
+	Order    int          // Order number from folder name (e.g., 000, 010, 020)
+	Name     string       // Category name without number prefix
+	Type     CategoryType // Type of category
+	Features []string     // List of PNG file paths in this category
 }
 
-// Generator handles sprite generation from gopherkon assets
+// Generator handles sprite generation from gopherize.me assets
 type Generator struct {
 	assetsPath string
-	assets     map[LayerType][]AssetInfo
+	categories []CategoryInfo // Categories sorted by order
 }
 
-// NewGenerator creates a new sprite generator
+// NewGenerator creates a new sprite generator for gopherize.me artwork
 func NewGenerator(assetsPath string) (*Generator, error) {
 	gen := &Generator{
 		assetsPath: assetsPath,
-		assets:     make(map[LayerType][]AssetInfo),
+		categories: []CategoryInfo{},
 	}
 
 	if err := gen.loadAssets(); err != nil {
@@ -52,82 +59,156 @@ func NewGenerator(assetsPath string) (*Generator, error) {
 	return gen, nil
 }
 
-// loadAssets scans the assets directory and categorizes sprites
+// loadAssets scans the assets directory for gopherize.me category folders
+// Categories are numbered folders like "000-Body", "010-Eyes", "020-Mouth", etc.
 func (g *Generator) loadAssets() error {
-	// If assets directory doesn't exist, create a placeholder structure
+	// If assets directory doesn't exist, return error (user needs to download artwork)
 	if _, err := os.Stat(g.assetsPath); os.IsNotExist(err) {
-		// Create directory structure
-		os.MkdirAll(filepath.Join(g.assetsPath, "body"), 0755)
-		os.MkdirAll(filepath.Join(g.assetsPath, "eyes"), 0755)
-		os.MkdirAll(filepath.Join(g.assetsPath, "mouth"), 0755)
-		os.MkdirAll(filepath.Join(g.assetsPath, "hats"), 0755)
-		os.MkdirAll(filepath.Join(g.assetsPath, "accessories"), 0755)
-		return nil
+		return fmt.Errorf("assets directory does not exist: %s. Please download gopherize.me artwork", g.assetsPath)
 	}
 
-	// Scan for asset files - map to actual gopherkon directory structure
-	layerDirs := map[LayerType]string{
-		LayerBody:      "torso",      // gopherkon uses "torso" for body
-		LayerEars:      "ears",       // ears directory
-		LayerEyes:      "eyes",
-		LayerMouth:     "mouth",
-		LayerHat:       "hat",
-		LayerAccessory: "accessory",
-		LayerClothing:  "extras",     // Use extras for additional accessories
-		LayerTool:      "pose",      // Use pose for tools/items
+	// Pattern to match numbered category folders: "000-CategoryName" or "010-CategoryName"
+	categoryPattern := regexp.MustCompile(`^(\d+)-(.+)$`)
+
+	entries, err := os.ReadDir(g.assetsPath)
+	if err != nil {
+		return fmt.Errorf("failed to read assets directory: %w", err)
 	}
 
-	for layerType, dirName := range layerDirs {
-		dirPath := filepath.Join(g.assetsPath, dirName)
-		if _, err := os.Stat(dirPath); os.IsNotExist(err) {
+	for _, entry := range entries {
+		if !entry.IsDir() {
 			continue
 		}
 
-		// Recursively scan directory for PNG files (handles subdirectories like torso/normal/)
-		g.scanDirectoryForAssets(dirPath, layerType)
+		// Check if folder matches gopherize.me category pattern
+		matches := categoryPattern.FindStringSubmatch(entry.Name())
+		if len(matches) != 3 {
+			continue // Skip folders that don't match the pattern
+		}
+
+		order, err := strconv.Atoi(matches[1])
+		if err != nil {
+			continue // Skip if order number is invalid
+		}
+
+		categoryName := matches[2]
+		categoryPath := filepath.Join(g.assetsPath, entry.Name())
+
+		// Scan category folder for PNG files
+		features, err := g.scanCategoryForFeatures(categoryPath)
+		if err != nil {
+			continue // Skip categories with errors
+		}
+
+		if len(features) > 0 {
+			categoryType := g.detectCategoryType(categoryName)
+			g.categories = append(g.categories, CategoryInfo{
+				Order:    order,
+				Name:     categoryName,
+				Type:     categoryType,
+				Features: features,
+			})
+		}
 	}
+
+	// Sort categories by order number
+	sort.Slice(g.categories, func(i, j int) bool {
+		return g.categories[i].Order < g.categories[j].Order
+	})
 
 	return nil
 }
 
-// scanDirectoryForAssets recursively scans a directory for PNG assets
-func (g *Generator) scanDirectoryForAssets(dirPath string, layerType LayerType) {
-	entries, err := os.ReadDir(dirPath)
+// scanCategoryForFeatures scans a category folder for PNG feature files
+func (g *Generator) scanCategoryForFeatures(categoryPath string) ([]string, error) {
+	features := []string{}
+
+	entries, err := os.ReadDir(categoryPath)
 	if err != nil {
-		return
+		return features, err
 	}
 
 	for _, entry := range entries {
-		fullPath := filepath.Join(dirPath, entry.Name())
-		
 		if entry.IsDir() {
-			// Recursively scan subdirectories
-			g.scanDirectoryForAssets(fullPath, layerType)
-			continue
+			continue // Skip subdirectories
 		}
 
 		if !strings.HasSuffix(strings.ToLower(entry.Name()), ".png") {
 			continue
 		}
 
-		// Skip "none.png" files
-		if strings.Contains(strings.ToLower(entry.Name()), "none.png") {
-			continue
-		}
-
-		isRare := strings.Contains(strings.ToLower(entry.Name()), "rare") ||
-			strings.Contains(strings.ToLower(entry.Name()), "legendary") ||
-			strings.Contains(strings.ToLower(entry.Name()), "epic") ||
-			strings.Contains(strings.ToLower(entry.Name()), "santa") ||
-			strings.Contains(strings.ToLower(entry.Name()), "tophat") ||
-			strings.Contains(strings.ToLower(entry.Name()), "sherlock")
-
-		g.assets[layerType] = append(g.assets[layerType], AssetInfo{
-			Path:      fullPath,
-			LayerType: layerType,
-			IsRare:    isRare,
-		})
+		fullPath := filepath.Join(categoryPath, entry.Name())
+		features = append(features, fullPath)
 	}
+
+	return features, nil
+}
+
+// detectCategoryType determines the type of category based on its name
+func (g *Generator) detectCategoryType(name string) CategoryType {
+	lower := strings.ToLower(name)
+	
+	switch {
+	case strings.Contains(lower, "body"):
+		return CategoryTypeBody
+	case strings.Contains(lower, "eye"):
+		return CategoryTypeEyes
+	case strings.Contains(lower, "shirt"):
+		return CategoryTypeShirts
+	case strings.Contains(lower, "hair") && !strings.Contains(lower, "facial"):
+		return CategoryTypeHair
+	case strings.Contains(lower, "facial") || strings.Contains(lower, "beard") || strings.Contains(lower, "mustache") || strings.Contains(lower, "stache"):
+		return CategoryTypeFacialHair
+	case strings.Contains(lower, "glass"):
+		return CategoryTypeGlasses
+	case strings.Contains(lower, "hat") || strings.Contains(lower, "accessor"):
+		return CategoryTypeHats
+	case strings.Contains(lower, "extra"):
+		return CategoryTypeExtras
+	default:
+		return CategoryTypeUnknown
+	}
+}
+
+// getCategoriesByType returns all categories of a specific type
+func (g *Generator) getCategoriesByType(categoryType CategoryType) []CategoryInfo {
+	var result []CategoryInfo
+	for _, cat := range g.categories {
+		if cat.Type == categoryType {
+			result = append(result, cat)
+		}
+	}
+	return result
+}
+
+// getCategoryOrderFromPath extracts the category order number from a file path
+func (g *Generator) getCategoryOrderFromPath(path string) int {
+	// Path format: "assets/artwork/010-Body/feature.png"
+	// Extract the order number (010) from the folder name
+	parts := strings.Split(path, string(filepath.Separator))
+	for _, part := range parts {
+		if strings.Contains(part, "-") {
+			// Check if it matches the pattern "010-CategoryName"
+			re := regexp.MustCompile(`^(\d+)-`)
+			matches := re.FindStringSubmatch(part)
+			if len(matches) >= 2 {
+				if order, err := strconv.Atoi(matches[1]); err == nil {
+					return order
+				}
+			}
+		}
+	}
+	return 999 // Default to high number if not found (will be sorted last)
+}
+
+// isRareFeature determines if a feature is rare based on filename
+func (g *Generator) isRareFeature(filename string) bool {
+	lower := strings.ToLower(filename)
+	return strings.Contains(lower, "rare") ||
+		strings.Contains(lower, "legendary") ||
+		strings.Contains(lower, "epic") ||
+		strings.Contains(lower, "gold") ||
+		strings.Contains(lower, "diamond")
 }
 
 // GenerateOptions configures sprite generation
@@ -146,129 +227,308 @@ type GenerateResult struct {
 	Rarity        string
 }
 
-// Generate creates a procedurally generated gopher sprite
+// Generate creates a procedurally generated gopher sprite using gopherize.me categories
+// Follows rarity-based rules:
+// - ALL: Body + Eyes + 1 Extra
+// - UNCOMMON: + Facial Hair OR Glasses
+// - RARE: + Hair OR Facial Hair + Another Extra OR Glasses
+// - LEGENDARY: All categories + 3 Extras
 func (g *Generator) Generate(opts GenerateOptions) (*GenerateResult, error) {
+	if len(g.categories) == 0 {
+		return nil, fmt.Errorf("no categories loaded - please ensure artwork is downloaded")
+	}
+
 	rng := rand.New(rand.NewSource(opts.Seed))
 	if opts.Seed == 0 {
 		rng = rand.New(rand.NewSource(rand.Int63()))
 	}
 
-	layers := []string{}
-	complexity := 0
-
-	// Always start with a body (base layer) - fully randomized
-	bodyAssets := g.assets[LayerBody]
-	if len(bodyAssets) == 0 {
-		return nil, fmt.Errorf("no body assets available")
+	// Determine target rarity
+	targetRarity := opts.TargetRarity
+	if targetRarity == "" {
+		// If complexity is specified, convert to rarity
+		if opts.Complexity > 0 {
+			targetRarity = g.complexityToRarity(opts.Complexity)
+		} else {
+			// Random rarity for wild encounters (weighted distribution)
+			randFloat := rng.Float64()
+			switch {
+			case randFloat < 0.60:
+				targetRarity = "COMMON"
+			case randFloat < 0.85:
+				targetRarity = "UNCOMMON"
+			case randFloat < 0.95:
+				targetRarity = "RARE"
+			case randFloat < 0.99:
+				targetRarity = "EPIC"
+			default:
+				targetRarity = "LEGENDARY"
+			}
+		}
 	}
-	
-	// Fully random body selection
-	bodyAsset := bodyAssets[rng.Intn(len(bodyAssets))]
-	layers = append(layers, bodyAsset.Path)
-	complexity++
 
-	// Load base image
-	baseImg, err := g.loadImage(bodyAsset.Path)
+	// Separate lists for non-extra features and extra features
+	// Extras will be composited last to appear on top
+	nonExtraFeatures := []string{} // Features to composite first (in order)
+	extraFeatures := []string{}    // Extras to composite last (on top)
+	usedCategoryIndices := make(map[int]bool)
+
+	// Get category indices by type for easy lookup
+	bodyCats := g.getCategoriesByType(CategoryTypeBody)
+	eyesCats := g.getCategoriesByType(CategoryTypeEyes)
+	hairCats := g.getCategoriesByType(CategoryTypeHair)
+	facialHairCats := g.getCategoriesByType(CategoryTypeFacialHair)
+	glassesCats := g.getCategoriesByType(CategoryTypeGlasses)
+	extrasCats := g.getCategoriesByType(CategoryTypeExtras)
+
+	// Find category indices in main categories array
+	findCategoryIndex := func(cat CategoryInfo) int {
+		for i, c := range g.categories {
+			if c.Order == cat.Order && c.Name == cat.Name {
+				return i
+			}
+		}
+		return -1
+	}
+
+	// Helper to add a feature from a category (returns feature path)
+	addFeatureFromCategory := func(cat CategoryInfo) (string, error) {
+		if len(cat.Features) == 0 {
+			return "", fmt.Errorf("category has no features")
+		}
+		feature := cat.Features[rng.Intn(len(cat.Features))]
+		idx := findCategoryIndex(cat)
+		if idx >= 0 {
+			usedCategoryIndices[idx] = true
+		}
+		return feature, nil
+	}
+
+	// Step 1: ALL gophers get Body + Eyes + 1 Extra
+	if len(bodyCats) == 0 {
+		return nil, fmt.Errorf("no body categories found")
+	}
+	bodyCat := bodyCats[rng.Intn(len(bodyCats))]
+	bodyFeature, err := addFeatureFromCategory(bodyCat)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load body: %w", err)
+		return nil, fmt.Errorf("failed to get body feature: %w", err)
 	}
+	nonExtraFeatures = append(nonExtraFeatures, bodyFeature)
 
-	// Determine target complexity
-	targetComplexity := opts.Complexity
-	if targetComplexity == 0 {
-		// Random complexity for wild encounters
-		targetComplexity = 2 + rng.Intn(8) // 2-9
+	// Add eyes
+	if len(eyesCats) == 0 {
+		return nil, fmt.Errorf("no eyes categories found")
 	}
+	eyesCat := eyesCats[rng.Intn(len(eyesCats))]
+	eyesFeature, err := addFeatureFromCategory(eyesCat)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get eyes feature: %w", err)
+	}
+	nonExtraFeatures = append(nonExtraFeatures, eyesFeature)
 
-	// ALWAYS add ears (required)
-	earsAssets := g.assets[LayerEars]
-	if len(earsAssets) > 0 {
-		// Random ear style (fancy, fluffy, foxy, normal, playful, pointy, tiny, wide, wolf)
-		earAsset := earsAssets[rng.Intn(len(earsAssets))]
-		layers = append(layers, earAsset.Path)
-		complexity++
-		if earAsset.IsRare {
-			complexity++ // Rare assets add extra complexity
+	// Add 1 Extra (required for all) - will be composited last
+	if len(extrasCats) == 0 {
+		return nil, fmt.Errorf("no extras categories found")
+	}
+	extraCat := extrasCats[rng.Intn(len(extrasCats))]
+	extraFeature, err := addFeatureFromCategory(extraCat)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get extra feature: %w", err)
+	}
+	extraFeatures = append(extraFeatures, extraFeature)
+
+	// Step 2: Apply rarity-based rules (collect features, don't composite yet)
+	switch targetRarity {
+	case "UNCOMMON":
+		// UNCOMMON: + Facial Hair OR Glasses
+		if rng.Float32() < 0.5 && len(facialHairCats) > 0 {
+			// Add facial hair
+			facialHairCat := facialHairCats[rng.Intn(len(facialHairCats))]
+			feature, err := addFeatureFromCategory(facialHairCat)
+			if err == nil {
+				nonExtraFeatures = append(nonExtraFeatures, feature)
+			}
+		} else if len(glassesCats) > 0 {
+			// Add glasses
+			glassesCat := glassesCats[rng.Intn(len(glassesCats))]
+			feature, err := addFeatureFromCategory(glassesCat)
+			if err == nil {
+				nonExtraFeatures = append(nonExtraFeatures, feature)
+			}
 		}
 
-		earImg, err := g.loadImage(earAsset.Path)
-		if err == nil {
-			baseImg = g.compositeLayer(baseImg, earImg)
-		}
-	}
-
-	// Add eyes (randomized)
-	eyesAssets := g.assets[LayerEyes]
-	if len(eyesAssets) > 0 {
-		eyeAsset := eyesAssets[rng.Intn(len(eyesAssets))]
-		layers = append(layers, eyeAsset.Path)
-		complexity++
-		if eyeAsset.IsRare {
-			complexity++ // Rare assets add extra complexity
-		}
-
-		eyeImg, err := g.loadImage(eyeAsset.Path)
-		if err == nil {
-			baseImg = g.compositeLayer(baseImg, eyeImg)
-		}
-	}
-
-	// Add mouth (randomized)
-	mouthAssets := g.assets[LayerMouth]
-	if len(mouthAssets) > 0 {
-		mouthAsset := mouthAssets[rng.Intn(len(mouthAssets))]
-		layers = append(layers, mouthAsset.Path)
-		complexity++
-		if mouthAsset.IsRare {
-			complexity++
+	case "RARE":
+		// RARE: + (Hair OR Facial Hair) AND (Another Extra OR Glasses)
+		// Add hair OR facial hair (always add one)
+		if rng.Float32() < 0.5 && len(hairCats) > 0 {
+			hairCat := hairCats[rng.Intn(len(hairCats))]
+			feature, err := addFeatureFromCategory(hairCat)
+			if err == nil {
+				nonExtraFeatures = append(nonExtraFeatures, feature)
+			}
+		} else if len(facialHairCats) > 0 {
+			facialHairCat := facialHairCats[rng.Intn(len(facialHairCats))]
+			feature, err := addFeatureFromCategory(facialHairCat)
+			if err == nil {
+				nonExtraFeatures = append(nonExtraFeatures, feature)
+			}
 		}
 
-		mouthImg, err := g.loadImage(mouthAsset.Path)
-		if err == nil {
-			baseImg = g.compositeLayer(baseImg, mouthImg)
+		// Add another extra OR glasses (always add one)
+		if rng.Float32() < 0.5 && len(extrasCats) > 0 {
+			// Find unused extra category
+			availableExtras := []CategoryInfo{}
+			for _, cat := range extrasCats {
+				idx := findCategoryIndex(cat)
+				if idx >= 0 && !usedCategoryIndices[idx] {
+					availableExtras = append(availableExtras, cat)
+				}
+			}
+			// If no unused extras, allow reusing
+			if len(availableExtras) == 0 {
+				availableExtras = extrasCats
+			}
+			if len(availableExtras) > 0 {
+				extraCat := availableExtras[rng.Intn(len(availableExtras))]
+				feature, err := addFeatureFromCategory(extraCat)
+				if err == nil {
+					extraFeatures = append(extraFeatures, feature)
+				}
+			}
+		} else if len(glassesCats) > 0 {
+			glassesCat := glassesCats[rng.Intn(len(glassesCats))]
+			feature, err := addFeatureFromCategory(glassesCat)
+			if err == nil {
+				nonExtraFeatures = append(nonExtraFeatures, feature)
+			}
 		}
-	}
 
-	// Add accessories up to target complexity (fully randomized order)
-	accessoryTypes := []LayerType{LayerHat, LayerAccessory, LayerClothing, LayerTool}
-	// Shuffle accessory types for randomization
-	for i := len(accessoryTypes) - 1; i > 0; i-- {
-		j := rng.Intn(i + 1)
-		accessoryTypes[i], accessoryTypes[j] = accessoryTypes[j], accessoryTypes[i]
-	}
-	
-	for complexity < targetComplexity && len(accessoryTypes) > 0 {
-		// Try each accessory type in random order
-		added := false
-		for _, accType := range accessoryTypes {
-			accAssets := g.assets[accType]
-			if len(accAssets) == 0 {
+	case "EPIC":
+		// EPIC: Similar to RARE but with more features
+		// Add hair OR facial hair
+		if rng.Float32() < 0.5 && len(hairCats) > 0 {
+			hairCat := hairCats[rng.Intn(len(hairCats))]
+			feature, err := addFeatureFromCategory(hairCat)
+			if err == nil {
+				nonExtraFeatures = append(nonExtraFeatures, feature)
+			}
+		} else if len(facialHairCats) > 0 {
+			facialHairCat := facialHairCats[rng.Intn(len(facialHairCats))]
+			feature, err := addFeatureFromCategory(facialHairCat)
+			if err == nil {
+				nonExtraFeatures = append(nonExtraFeatures, feature)
+			}
+		}
+
+		// Add glasses
+		if len(glassesCats) > 0 {
+			glassesCat := glassesCats[rng.Intn(len(glassesCats))]
+			feature, err := addFeatureFromCategory(glassesCat)
+			if err == nil {
+				nonExtraFeatures = append(nonExtraFeatures, feature)
+			}
+		}
+
+		// Add another extra
+		availableExtras := []CategoryInfo{}
+		for _, cat := range extrasCats {
+			idx := findCategoryIndex(cat)
+			if idx >= 0 && !usedCategoryIndices[idx] {
+				availableExtras = append(availableExtras, cat)
+			}
+		}
+		if len(availableExtras) > 0 {
+			extraCat := availableExtras[rng.Intn(len(availableExtras))]
+			feature, err := addFeatureFromCategory(extraCat)
+			if err == nil {
+				extraFeatures = append(extraFeatures, feature)
+			}
+		}
+
+	case "LEGENDARY":
+		// LEGENDARY: All categories + 3 Extras
+		// Add all available categories in order (categories are already sorted by order)
+		for i, category := range g.categories {
+			if usedCategoryIndices[i] {
+				continue
+			}
+			if len(category.Features) == 0 {
+				usedCategoryIndices[i] = true
 				continue
 			}
 
-			// Random asset from this type
-			accAsset := accAssets[rng.Intn(len(accAssets))]
-			layers = append(layers, accAsset.Path)
-			complexity++
-			if accAsset.IsRare {
-				complexity++
+			// Skip extras for now (we'll add 3 at the end)
+			if category.Type == CategoryTypeExtras {
+				continue
 			}
 
-			accImg, err := g.loadImage(accAsset.Path)
-			if err == nil {
-				baseImg = g.compositeLayer(baseImg, accImg)
-				added = true
-				break
+			feature := category.Features[rng.Intn(len(category.Features))]
+			nonExtraFeatures = append(nonExtraFeatures, feature)
+			usedCategoryIndices[i] = true
+		}
+
+		// Add 3 more extras (can reuse the same extra category if needed)
+		// First try to find unused extra categories
+		availableExtras := []CategoryInfo{}
+		for _, cat := range extrasCats {
+			idx := findCategoryIndex(cat)
+			if idx >= 0 && !usedCategoryIndices[idx] {
+				availableExtras = append(availableExtras, cat)
 			}
 		}
+		// If we don't have enough unique extra categories, allow reusing
+		if len(availableExtras) == 0 {
+			availableExtras = extrasCats
+		}
 		
-		// If we couldn't add any accessory, break to avoid infinite loop
-		if !added {
-			break
+		for count := 0; count < 3; count++ {
+			if len(availableExtras) > 0 {
+				extraCat := availableExtras[rng.Intn(len(availableExtras))]
+				feature := extraCat.Features[rng.Intn(len(extraCat.Features))]
+				extraFeatures = append(extraFeatures, feature)
+			}
 		}
 	}
 
-	rarity := g.complexityToRarity(complexity)
+	// Step 3: Composite all features in the correct order
+	// Sort non-extra features by their category order to ensure proper layering
+	sort.Slice(nonExtraFeatures, func(i, j int) bool {
+		// Extract category order from file path (e.g., "assets/artwork/010-Body/feature.png")
+		orderI := g.getCategoryOrderFromPath(nonExtraFeatures[i])
+		orderJ := g.getCategoryOrderFromPath(nonExtraFeatures[j])
+		return orderI < orderJ
+	})
+
+	// First, composite all non-extra features in order
+	baseImg, err := g.loadImage(nonExtraFeatures[0])
+	if err != nil {
+		return nil, fmt.Errorf("failed to load base image: %w", err)
+	}
+
+	// Composite remaining non-extra features in order
+	for i := 1; i < len(nonExtraFeatures); i++ {
+		img, err := g.loadImage(nonExtraFeatures[i])
+		if err == nil {
+			baseImg = g.compositeLayer(baseImg, img)
+		}
+	}
+
+	// Finally, composite all extras on top (extras appear on top of everything)
+	for _, extraFeature := range extraFeatures {
+		img, err := g.loadImage(extraFeature)
+		if err == nil {
+			baseImg = g.compositeLayer(baseImg, img)
+		}
+	}
+
+	// Combine all layers for the result
+	layers := append(nonExtraFeatures, extraFeatures...)
+
+	// Calculate complexity based on number of layers
+	complexity := len(layers)
+	
+	// Use target rarity since we built the gopher to match it
+	rarity := targetRarity
 
 	return &GenerateResult{
 		Image:      baseImg,
@@ -317,6 +577,33 @@ func (g *Generator) SaveImage(img image.Image, outputPath string) error {
 	defer file.Close()
 
 	return png.Encode(file, img)
+}
+
+// EncodeImageToBase64 encodes an image to base64 string
+func (g *Generator) EncodeImageToBase64(img image.Image) (string, error) {
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return "", fmt.Errorf("failed to encode image: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(buf.Bytes()), nil
+}
+
+// DecodeImageFromBase64 decodes a base64 string to an image
+func (g *Generator) DecodeImageFromBase64(base64Str string) (image.Image, error) {
+	data, err := base64.StdEncoding.DecodeString(base64Str)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode base64: %w", err)
+	}
+	img, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode PNG: %w", err)
+	}
+	return img, nil
+}
+
+// LoadImageFromPath loads an image from a file path (for backward compatibility)
+func (g *Generator) LoadImageFromPath(path string) (image.Image, error) {
+	return g.loadImage(path)
 }
 
 // complexityToRarity converts complexity score to rarity string

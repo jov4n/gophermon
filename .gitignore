@@ -29,6 +29,9 @@ go.work
 # Generated assets
 assets/generated/
 
+# Artwork directory (large asset files)
+assets/artwork/
+
 # IDE
 .vscode/
 .idea/

@@ -49,9 +49,9 @@ func main() {
 	partyRepo := storage.NewPartyRepo(db, gopherRepo, trainerRepo)
 	battleRepo := storage.NewBattleRepo(db)
 
-	// Initialize gopherkon generator
+	// Initialize gopherkon generator (now uses gopherize.me artwork structure)
 	log.Println("Initializing sprite generator...")
-	assetsPath := "assets/gopherkon"
+	assetsPath := "assets/artwork"
 	generator, err := gopherkon.NewGenerator(assetsPath)
 	if err != nil {
 		log.Printf("Warning: Could not load gopherkon assets: %v. Sprite generation may be limited.", err)

@@ -3,7 +3,6 @@ package game
 import (
 	"fmt"
 	"math/rand"
-	"path/filepath"
 	"time"
 
 	"gophermon-bot/internal/gopherkon"
@@ -76,15 +75,16 @@ func (es *EvolutionService) EvolveGopher(gopher *Gopher) (*Gopher, error) {
 		return nil, fmt.Errorf("failed to generate evolution sprite: %w", err)
 	}
 
-	// Save new sprite
-	spritePath := filepath.Join("assets", "generated", fmt.Sprintf("evolved_%s_%d.png", gopher.ID, time.Now().Unix()))
-	if err := es.generator.SaveImage(result.Image, spritePath); err != nil {
-		return nil, fmt.Errorf("failed to save evolution sprite: %w", err)
+	// Encode new sprite to base64
+	spriteData, err := es.generator.EncodeImageToBase64(result.Image)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode evolution sprite: %w", err)
 	}
 
 	// Update gopher
 	gopher.EvolutionStage = newStage
-	gopher.SpritePath = spritePath
+	gopher.SpritePath = "" // No longer using file paths
+	gopher.SpriteData = spriteData
 	gopher.ComplexityScore = result.Complexity
 	gopher.Rarity = result.Rarity
 	gopher.GopherkonLayers = result.Layers
@@ -97,13 +97,32 @@ func (es *EvolutionService) EvolveGopher(gopher *Gopher) (*Gopher, error) {
 	gopher.Defense += 5 + (newStage * 3)
 	gopher.Speed += 3 + (newStage * 2)
 
-	// Unlock new abilities if level is high enough
-	if gopher.Level >= 20 && len(gopher.Abilities) < 4 {
-		abilityTemplates := GetAbilitiesForArchetype(Archetype(gopher.SpeciesArchetype))
-		if len(abilityTemplates) > len(gopher.Abilities) {
-			// Add a new ability
-			newAbilityTemplate := abilityTemplates[len(gopher.Abilities)]
-			newAbility, err := CreateAbilityFromTemplate(newAbilityTemplate, fmt.Sprintf("%s_ability_%d", gopher.ID, len(gopher.Abilities)))
+	// Unlock new abilities based on evolution stage
+	abilityTemplates := GetAbilitiesForArchetype(Archetype(gopher.SpeciesArchetype), gopher.EvolutionStage, gopher.Rarity)
+	
+	// Determine how many abilities gopher should have
+	numAbilities := 2
+	if gopher.Level >= 10 {
+		numAbilities = 3
+	}
+	if gopher.Level >= 20 {
+		numAbilities = 4
+	}
+	if gopher.EvolutionStage >= 1 {
+		numAbilities = 5
+	}
+	if gopher.EvolutionStage >= 2 {
+		numAbilities = 6
+	}
+	if gopher.Rarity == "LEGENDARY" {
+		numAbilities = 7 // Legendaries get more abilities
+	}
+	
+	// Add new abilities if needed
+	if len(gopher.Abilities) < numAbilities && len(abilityTemplates) > len(gopher.Abilities) {
+		// Add abilities starting from where we left off
+		for i := len(gopher.Abilities); i < numAbilities && i < len(abilityTemplates); i++ {
+			newAbility, err := CreateAbilityFromTemplate(abilityTemplates[i], fmt.Sprintf("%s_ability_%d", gopher.ID, i))
 			if err == nil {
 				gopher.Abilities = append(gopher.Abilities, newAbility)
 			}

@@ -24,7 +24,10 @@ type Gopher struct {
 	ComplexityScore int
 	SpeciesArchetype string
 	EvolutionStage  int
-	SpritePath      string
+	PrimaryType     string  // Primary type (Hacker, Tank, Speedy, Support, Mage)
+	SecondaryType   string  // Secondary type for dual-type gophers (optional)
+	SpritePath      string  // Deprecated: kept for backward compatibility, can be empty
+	SpriteData      string  // Base64 encoded PNG image data
 	GopherkonLayers []string // Will be stored as JSON
 	IsInParty       bool
 	PCSlot          *int
@@ -52,15 +55,16 @@ func (r *GopherRepo) Create(g *Gopher) (*Gopher, error) {
 	query := `INSERT INTO gophers (
 		id, trainer_id, name, level, xp, current_hp, max_hp, 
 		attack, defense, speed, rarity, complexity_score, 
-		species_archetype, evolution_stage, sprite_path, 
-		gopherkon_layers, is_in_party, pc_slot
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		species_archetype, evolution_stage, primary_type, secondary_type,
+		sprite_path, sprite_data, gopherkon_layers, is_in_party, pc_slot
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, err = r.db.Conn().Exec(query,
 		g.ID, g.TrainerID, g.Name, g.Level, g.XP,
 		g.CurrentHP, g.MaxHP, g.Attack, g.Defense, g.Speed,
 		g.Rarity, g.ComplexityScore, g.SpeciesArchetype,
-		g.EvolutionStage, g.SpritePath, string(layersJSON),
+		g.EvolutionStage, g.PrimaryType, g.SecondaryType,
+		g.SpritePath, g.SpriteData, string(layersJSON),
 		g.IsInParty, g.PCSlot,
 	)
 
@@ -74,13 +78,17 @@ func (r *GopherRepo) Create(g *Gopher) (*Gopher, error) {
 func (r *GopherRepo) GetByID(id string) (*Gopher, error) {
 	query := `SELECT id, trainer_id, name, level, xp, current_hp, max_hp,
 	          attack, defense, speed, rarity, complexity_score,
-	          species_archetype, evolution_stage, sprite_path,
-	          gopherkon_layers, is_in_party, pc_slot, created_at
+	          species_archetype, evolution_stage, primary_type, secondary_type,
+	          sprite_path, sprite_data, gopherkon_layers, is_in_party, pc_slot, created_at
 	          FROM gophers WHERE id = ?`
 
 	var g Gopher
 	var trainerID sql.NullString
 	var pcSlot sql.NullInt64
+	var spritePath sql.NullString
+	var spriteData sql.NullString
+	var primaryType sql.NullString
+	var secondaryType sql.NullString
 	var layersJSON string
 	var createdAt string
 
@@ -88,7 +96,8 @@ func (r *GopherRepo) GetByID(id string) (*Gopher, error) {
 		&g.ID, &trainerID, &g.Name, &g.Level, &g.XP,
 		&g.CurrentHP, &g.MaxHP, &g.Attack, &g.Defense, &g.Speed,
 		&g.Rarity, &g.ComplexityScore, &g.SpeciesArchetype,
-		&g.EvolutionStage, &g.SpritePath, &layersJSON,
+		&g.EvolutionStage, &primaryType, &secondaryType,
+		&spritePath, &spriteData, &layersJSON,
 		&g.IsInParty, &pcSlot, &createdAt,
 	)
 
@@ -106,6 +115,18 @@ func (r *GopherRepo) GetByID(id string) (*Gopher, error) {
 		slot := int(pcSlot.Int64)
 		g.PCSlot = &slot
 	}
+	if spritePath.Valid {
+		g.SpritePath = spritePath.String
+	}
+	if spriteData.Valid {
+		g.SpriteData = spriteData.String
+	}
+	if primaryType.Valid {
+		g.PrimaryType = primaryType.String
+	}
+	if secondaryType.Valid {
+		g.SecondaryType = secondaryType.String
+	}
 
 	if err := json.Unmarshal([]byte(layersJSON), &g.GopherkonLayers); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal layers: %w", err)
@@ -118,8 +139,8 @@ func (r *GopherRepo) GetByID(id string) (*Gopher, error) {
 func (r *GopherRepo) GetByTrainerID(trainerID string) ([]*Gopher, error) {
 	query := `SELECT id, trainer_id, name, level, xp, current_hp, max_hp,
 	          attack, defense, speed, rarity, complexity_score,
-	          species_archetype, evolution_stage, sprite_path,
-	          gopherkon_layers, is_in_party, pc_slot, created_at
+	          species_archetype, evolution_stage, primary_type, secondary_type,
+	          sprite_path, sprite_data, gopherkon_layers, is_in_party, pc_slot, created_at
 	          FROM gophers WHERE trainer_id = ? ORDER BY is_in_party DESC, created_at ASC`
 
 	rows, err := r.db.Conn().Query(query, trainerID)
@@ -130,37 +151,11 @@ func (r *GopherRepo) GetByTrainerID(trainerID string) ([]*Gopher, error) {
 
 	var gophers []*Gopher
 	for rows.Next() {
-		var g Gopher
-		var trainerID sql.NullString
-		var pcSlot sql.NullInt64
-		var layersJSON string
-		var createdAt string
-
-		err := rows.Scan(
-			&g.ID, &trainerID, &g.Name, &g.Level, &g.XP,
-			&g.CurrentHP, &g.MaxHP, &g.Attack, &g.Defense, &g.Speed,
-			&g.Rarity, &g.ComplexityScore, &g.SpeciesArchetype,
-			&g.EvolutionStage, &g.SpritePath, &layersJSON,
-			&g.IsInParty, &pcSlot, &createdAt,
-		)
+		g, err := r.scanGopherRow(rows)
 		if err != nil {
-			return nil, fmt.Errorf("failed to scan gopher: %w", err)
+			return nil, err
 		}
-
-		if trainerID.Valid {
-			g.TrainerID = &trainerID.String
-		}
-		if pcSlot.Valid {
-			slot := int(pcSlot.Int64)
-			g.PCSlot = &slot
-		}
-
-		if err := json.Unmarshal([]byte(layersJSON), &g.GopherkonLayers); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal layers: %w", err)
-		}
-
-		g.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt)
-		gophers = append(gophers, &g)
+		gophers = append(gophers, g)
 	}
 
 	return gophers, nil
@@ -169,8 +164,8 @@ func (r *GopherRepo) GetByTrainerID(trainerID string) ([]*Gopher, error) {
 func (r *GopherRepo) GetParty(trainerID string) ([]*Gopher, error) {
 	query := `SELECT id, trainer_id, name, level, xp, current_hp, max_hp,
 	          attack, defense, speed, rarity, complexity_score,
-	          species_archetype, evolution_stage, sprite_path,
-	          gopherkon_layers, is_in_party, pc_slot, created_at
+	          species_archetype, evolution_stage, primary_type, secondary_type,
+	          sprite_path, sprite_data, gopherkon_layers, is_in_party, pc_slot, created_at
 	          FROM gophers WHERE trainer_id = ? AND is_in_party = TRUE
 	          ORDER BY created_at ASC LIMIT 6`
 
@@ -182,37 +177,11 @@ func (r *GopherRepo) GetParty(trainerID string) ([]*Gopher, error) {
 
 	var gophers []*Gopher
 	for rows.Next() {
-		var g Gopher
-		var trainerID sql.NullString
-		var pcSlot sql.NullInt64
-		var layersJSON string
-		var createdAt string
-
-		err := rows.Scan(
-			&g.ID, &trainerID, &g.Name, &g.Level, &g.XP,
-			&g.CurrentHP, &g.MaxHP, &g.Attack, &g.Defense, &g.Speed,
-			&g.Rarity, &g.ComplexityScore, &g.SpeciesArchetype,
-			&g.EvolutionStage, &g.SpritePath, &layersJSON,
-			&g.IsInParty, &pcSlot, &createdAt,
-		)
+		g, err := r.scanGopherRow(rows)
 		if err != nil {
-			return nil, fmt.Errorf("failed to scan gopher: %w", err)
+			return nil, err
 		}
-
-		if trainerID.Valid {
-			g.TrainerID = &trainerID.String
-		}
-		if pcSlot.Valid {
-			slot := int(pcSlot.Int64)
-			g.PCSlot = &slot
-		}
-
-		if err := json.Unmarshal([]byte(layersJSON), &g.GopherkonLayers); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal layers: %w", err)
-		}
-
-		g.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt)
-		gophers = append(gophers, &g)
+		gophers = append(gophers, g)
 	}
 
 	return gophers, nil
@@ -221,8 +190,8 @@ func (r *GopherRepo) GetParty(trainerID string) ([]*Gopher, error) {
 func (r *GopherRepo) GetPC(trainerID string, limit, offset int) ([]*Gopher, error) {
 	query := `SELECT id, trainer_id, name, level, xp, current_hp, max_hp,
 	          attack, defense, speed, rarity, complexity_score,
-	          species_archetype, evolution_stage, sprite_path,
-	          gopherkon_layers, is_in_party, pc_slot, created_at
+	          species_archetype, evolution_stage, primary_type, secondary_type,
+	          sprite_path, sprite_data, gopherkon_layers, is_in_party, pc_slot, created_at
 	          FROM gophers WHERE trainer_id = ? AND is_in_party = FALSE
 	          ORDER BY pc_slot ASC LIMIT ? OFFSET ?`
 
@@ -234,37 +203,11 @@ func (r *GopherRepo) GetPC(trainerID string, limit, offset int) ([]*Gopher, erro
 
 	var gophers []*Gopher
 	for rows.Next() {
-		var g Gopher
-		var trainerID sql.NullString
-		var pcSlot sql.NullInt64
-		var layersJSON string
-		var createdAt string
-
-		err := rows.Scan(
-			&g.ID, &trainerID, &g.Name, &g.Level, &g.XP,
-			&g.CurrentHP, &g.MaxHP, &g.Attack, &g.Defense, &g.Speed,
-			&g.Rarity, &g.ComplexityScore, &g.SpeciesArchetype,
-			&g.EvolutionStage, &g.SpritePath, &layersJSON,
-			&g.IsInParty, &pcSlot, &createdAt,
-		)
+		g, err := r.scanGopherRow(rows)
 		if err != nil {
-			return nil, fmt.Errorf("failed to scan gopher: %w", err)
+			return nil, err
 		}
-
-		if trainerID.Valid {
-			g.TrainerID = &trainerID.String
-		}
-		if pcSlot.Valid {
-			slot := int(pcSlot.Int64)
-			g.PCSlot = &slot
-		}
-
-		if err := json.Unmarshal([]byte(layersJSON), &g.GopherkonLayers); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal layers: %w", err)
-		}
-
-		g.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt)
-		gophers = append(gophers, &g)
+		gophers = append(gophers, g)
 	}
 
 	return gophers, nil
@@ -280,7 +223,8 @@ func (r *GopherRepo) Update(g *Gopher) error {
 		trainer_id = ?, name = ?, level = ?, xp = ?, current_hp = ?, max_hp = ?,
 		attack = ?, defense = ?, speed = ?, rarity = ?,
 		complexity_score = ?, species_archetype = ?,
-		evolution_stage = ?, sprite_path = ?, gopherkon_layers = ?,
+		evolution_stage = ?, primary_type = ?, secondary_type = ?,
+		sprite_path = ?, sprite_data = ?, gopherkon_layers = ?,
 		is_in_party = ?, pc_slot = ?
 		WHERE id = ?`
 
@@ -288,7 +232,8 @@ func (r *GopherRepo) Update(g *Gopher) error {
 		g.TrainerID, g.Name, g.Level, g.XP, g.CurrentHP, g.MaxHP,
 		g.Attack, g.Defense, g.Speed, g.Rarity,
 		g.ComplexityScore, g.SpeciesArchetype,
-		g.EvolutionStage, g.SpritePath, string(layersJSON),
+		g.EvolutionStage, g.PrimaryType, g.SecondaryType,
+		g.SpritePath, g.SpriteData, string(layersJSON),
 		g.IsInParty, g.PCSlot, g.ID,
 	)
 
@@ -306,5 +251,57 @@ func (r *GopherRepo) CountPC(trainerID string) (int, error) {
 	var count int
 	err := r.db.Conn().QueryRow(query, trainerID).Scan(&count)
 	return count, err
+}
+
+// scanGopherRow is a helper to scan a gopher row from a query result
+func (r *GopherRepo) scanGopherRow(rows *sql.Rows) (*Gopher, error) {
+	var g Gopher
+	var trainerID sql.NullString
+	var pcSlot sql.NullInt64
+	var spritePath sql.NullString
+	var spriteData sql.NullString
+	var primaryType sql.NullString
+	var secondaryType sql.NullString
+	var layersJSON string
+	var createdAt string
+
+	err := rows.Scan(
+		&g.ID, &trainerID, &g.Name, &g.Level, &g.XP,
+		&g.CurrentHP, &g.MaxHP, &g.Attack, &g.Defense, &g.Speed,
+		&g.Rarity, &g.ComplexityScore, &g.SpeciesArchetype,
+		&g.EvolutionStage, &primaryType, &secondaryType,
+		&spritePath, &spriteData, &layersJSON,
+		&g.IsInParty, &pcSlot, &createdAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan gopher: %w", err)
+	}
+
+	if trainerID.Valid {
+		g.TrainerID = &trainerID.String
+	}
+	if pcSlot.Valid {
+		slot := int(pcSlot.Int64)
+		g.PCSlot = &slot
+	}
+	if spritePath.Valid {
+		g.SpritePath = spritePath.String
+	}
+	if spriteData.Valid {
+		g.SpriteData = spriteData.String
+	}
+	if primaryType.Valid {
+		g.PrimaryType = primaryType.String
+	}
+	if secondaryType.Valid {
+		g.SecondaryType = secondaryType.String
+	}
+
+	if err := json.Unmarshal([]byte(layersJSON), &g.GopherkonLayers); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal layers: %w", err)
+	}
+
+	g.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt)
+	return &g, nil
 }
 

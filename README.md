@@ -8,7 +8,37 @@ A Pokémon-style Discord bot game featuring procedurally generated gophers, turn
 2. Copy `.env.example` to `.env` and fill in your Discord bot token
 3. Get your Discord bot token from [Discord Developer Portal](https://discord.com/developers/applications)
 4. Run `go mod download` to install dependencies
-5. Run `go run cmd/bot/main.go` to start the bot
+5. Download gopherize.me artwork (see [Artwork Setup](#artwork-setup) below)
+6. Run `go run cmd/bot/main.go` to start the bot
+
+## Artwork Setup
+
+This bot uses artwork from [gopherize.me](https://gopherize.me). You need to download the artwork before running the bot.
+
+### Automatic Download (Recommended)
+
+The artwork can be downloaded automatically from the gopherize.me API:
+
+```bash
+go run scripts/download_artwork.go
+```
+
+This script will:
+- Fetch artwork metadata from https://gopherize.me/api/artwork
+- Download all categories and images
+- Organize them into the correct folder structure (`assets/artwork/010-Body/`, etc.)
+
+### Manual Download
+
+If the automatic download doesn't work, see `scripts/download_artwork_manual.md` for manual instructions.
+
+The artwork should be organized in `assets/artwork/` with numbered category folders:
+- `000-Body/` - Base body features
+- `010-Eyes/` - Eye features
+- `020-Mouth/` - Mouth features
+- etc.
+
+Each category folder contains PNG files that are overlaid in order to create the final gopher image.
 
 ## Getting a Discord Bot Token
 
@@ -42,5 +72,6 @@ A Pokémon-style Discord bot game featuring procedurally generated gophers, turn
 - `internal/gopherkon/` - Sprite generation
 - `internal/storage/` - Database repositories
 - `migrations/` - Database schema migrations
-- `assets/gopherkon/` - Gopherkon sprite assets
+- `assets/artwork/` - Gopherize.me artwork (numbered category folders)
+- `assets/generated/` - Generated gopher sprites
 

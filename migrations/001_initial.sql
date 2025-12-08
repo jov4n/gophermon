@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS gophers (
     complexity_score INTEGER NOT NULL,
     species_archetype TEXT NOT NULL,
     evolution_stage INTEGER DEFAULT 0,
-    sprite_path TEXT NOT NULL,
+    sprite_path TEXT,
     gopherkon_layers TEXT NOT NULL, -- JSON string
     is_in_party BOOLEAN DEFAULT FALSE,
     pc_slot INTEGER,
