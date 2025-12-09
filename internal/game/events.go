@@ -11,12 +11,12 @@ import (
 type EventType string
 
 const (
-	EventShinyHunt      EventType = "SHINY_HUNT"      // Increased shiny spawn rates (1/100 instead of 1/4096)
-	EventDoubleXP       EventType = "DOUBLE_XP"        // 2x XP from battles
-	EventRareEncounter  EventType = "RARE_ENCOUNTER"  // Higher chance of rare/legendary gophers
-	EventLuckyDay       EventType = "LUCKY_DAY"       // Better capture rates
-	EventStatBoost      EventType = "STAT_BOOST"      // All gophers get 10% stat boost
-	EventEvolutionFest  EventType = "EVOLUTION_FEST"  // Faster evolution (reduced level requirements)
+	EventShinyHunt     EventType = "SHINY_HUNT"     // Increased shiny spawn rates (1/100 instead of 1/4096)
+	EventDoubleXP      EventType = "DOUBLE_XP"      // 2x XP from battles
+	EventRareEncounter EventType = "RARE_ENCOUNTER" // Higher chance of rare/legendary gophers
+	EventLuckyDay      EventType = "LUCKY_DAY"      // Better capture rates
+	EventStatBoost     EventType = "STAT_BOOST"     // All gophers get 10% stat boost
+	EventEvolutionFest EventType = "EVOLUTION_FEST" // Faster evolution (reduced level requirements)
 )
 
 // Event represents an active event
@@ -32,8 +32,8 @@ type Event struct {
 
 // EventManager manages active events
 type EventManager struct {
-	mu      sync.RWMutex
-	events  map[string]*Event
+	mu        sync.RWMutex
+	events    map[string]*Event
 	channelID string // Discord channel to announce events
 }
 
@@ -71,13 +71,13 @@ func (em *EventManager) StartEvent(eventType EventType, duration time.Duration) 
 	}
 
 	event := &Event{
-		ID:        fmt.Sprintf("event_%d", time.Now().Unix()),
-		Type:      eventType,
-		Name:      em.getEventName(eventType),
+		ID:          fmt.Sprintf("event_%d", time.Now().Unix()),
+		Type:        eventType,
+		Name:        em.getEventName(eventType),
 		Description: em.getEventDescription(eventType),
-		StartTime: time.Now(),
-		EndTime:   time.Now().Add(duration),
-		Active:    true,
+		StartTime:   time.Now(),
+		EndTime:     time.Now().Add(duration),
+		Active:      true,
 	}
 
 	em.events[event.ID] = event
@@ -271,4 +271,3 @@ func (em *EventManager) StartRandomEvent(duration time.Duration) *Event {
 	eventType := GetRandomEventType()
 	return em.StartEvent(eventType, duration)
 }
-
