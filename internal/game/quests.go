@@ -70,7 +70,12 @@ func (s *QuestService) GenerateDailyQuests(trainerID string) error {
 			Completed:     false,
 			ExpiresAt:     tomorrow,
 		}
-		s.questRepo.Create(quest)
+		if err := s.questRepo.Create(quest); err != nil {
+			// Log error but continue with other quests
+			// Return error would prevent other quests from being created
+			// In production, you might want to collect errors and return them
+			continue
+		}
 	}
 
 	return nil

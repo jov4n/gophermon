@@ -24,6 +24,7 @@ type Handlers struct {
 	gopherRepo      *storage.GopherRepo
 	partyRepo       *storage.PartyRepo
 	battleRepo      *storage.BattleRepo
+	itemRepo        *storage.ItemRepo
 	battles         map[string]*game.BattleState // In-memory battle cache
 	starterSessions map[string][]string          // Session ID -> starter gopher IDs
 }
@@ -34,6 +35,7 @@ func NewHandlers(
 	gopherRepo *storage.GopherRepo,
 	partyRepo *storage.PartyRepo,
 	battleRepo *storage.BattleRepo,
+	itemRepo *storage.ItemRepo,
 ) *Handlers {
 	return &Handlers{
 		gameService:     gameService,
@@ -41,6 +43,7 @@ func NewHandlers(
 		gopherRepo:      gopherRepo,
 		partyRepo:       partyRepo,
 		battleRepo:      battleRepo,
+		itemRepo:        itemRepo,
 		battles:         make(map[string]*game.BattleState),
 		starterSessions: make(map[string][]string),
 	}
@@ -427,6 +430,7 @@ func (h *Handlers) handleChoose(s *discordgo.Session, i *discordgo.InteractionCr
 }
 
 func (h *Handlers) handleParty(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	data := i.ApplicationCommandData()
 	discordID := i.Member.User.ID
 
 	trainer, err := h.trainerRepo.GetByDiscordID(discordID)
@@ -435,6 +439,74 @@ func (h *Handlers) handleParty(s *discordgo.Session, i *discordgo.InteractionCre
 		return
 	}
 
+	// Check for subcommands
+	if len(data.Options) > 0 {
+		subCommand := data.Options[0]
+		switch subCommand.Name {
+		case "heal":
+			// Heal all party members
+			party, err := h.gopherRepo.GetParty(trainer.ID)
+			if err != nil {
+				respondEphemeral(s, i, fmt.Sprintf("Error: %v", err))
+				return
+			}
+
+			if len(party) == 0 {
+				respondEphemeral(s, i, "Your party is empty! Use /start to get a starter gopher.")
+				return
+			}
+
+			// Calculate maximum healing cost (10 GoCoins per gopher)
+			maxHealCost := len(party) * 10
+			if trainer.Currency < maxHealCost {
+				respondEphemeral(s, i, fmt.Sprintf("Insufficient currency! You need %d GoCoins but only have %d.", maxHealCost, trainer.Currency))
+				return
+			}
+
+			// Heal all party members and track success (charge only for successful heals)
+			healedCount := 0
+			failedCount := 0
+			for _, gopher := range party {
+				gopher.CurrentHP = gopher.MaxHP
+				if err := h.gopherRepo.Update(gopher); err != nil {
+					log.Printf("Error healing gopher %s: %v", gopher.ID, err)
+					failedCount++
+				} else {
+					healedCount++
+				}
+			}
+
+			// If all heals failed, don't charge anything
+			if healedCount == 0 {
+				respondEphemeral(s, i, fmt.Sprintf("Failed to heal any gophers. No currency charged."))
+				return
+			}
+
+			// Charge only for successful heals
+			actualCost := healedCount * 10
+			if err := h.trainerRepo.RemoveCurrency(trainer.ID, actualCost); err != nil {
+				// Critical: failed to charge for successful heals - log for manual intervention
+				log.Printf("CRITICAL: Failed to charge currency after successful heals. Trainer: %s, Amount: %d, Healed: %d, Error: %v", trainer.ID, actualCost, healedCount, err)
+				respondEphemeral(s, i, fmt.Sprintf("Healed %d gophers, but failed to charge currency. Please contact support.", healedCount))
+				return
+			}
+
+			// Report results
+			if failedCount > 0 {
+				respondEphemeral(s, i, fmt.Sprintf("Healed %d/%d party members. %d failed. Cost: %d GoCoins (charged only for successful heals)", healedCount, len(party), failedCount, actualCost))
+			} else {
+				respondEphemeral(s, i, fmt.Sprintf("All party members healed! Cost: %d GoCoins", actualCost))
+			}
+			return
+
+		case "view":
+			// Fall through to default view behavior
+		default:
+			// Fall through to default view behavior
+		}
+	}
+
+	// Default: view party
 	party, err := h.gopherRepo.GetParty(trainer.ID)
 	if err != nil {
 		respondEphemeral(s, i, fmt.Sprintf("Error: %v", err))
@@ -810,8 +882,18 @@ func (h *Handlers) handleGopher(s *discordgo.Session, i *discordgo.InteractionCr
 			return
 		}
 
-		// Toggle favorite (would need database field)
-		respondEphemeral(s, i, "Favorite status toggled!")
+		// Toggle favorite status
+		gopher.IsFavorite = !gopher.IsFavorite
+		if err := h.gopherRepo.Update(gopher); err != nil {
+			respondEphemeral(s, i, fmt.Sprintf("Error updating favorite status: %v", err))
+			return
+		}
+
+		status := "favorited"
+		if !gopher.IsFavorite {
+			status = "unfavorited"
+		}
+		respondEphemeral(s, i, fmt.Sprintf("Gopher %s!", status))
 		return
 
 	case "release":
@@ -840,8 +922,19 @@ func (h *Handlers) handleGopher(s *discordgo.Session, i *discordgo.InteractionCr
 			reward *= 10
 		}
 
-		h.gopherRepo.Delete(gopherID)
-		h.trainerRepo.AddCurrency(trainer.ID, reward)
+		// Delete gopher first
+		if err := h.gopherRepo.Delete(gopherID); err != nil {
+			respondEphemeral(s, i, fmt.Sprintf("Error releasing gopher: %v", err))
+			return
+		}
+
+		// Add currency reward
+		if err := h.trainerRepo.AddCurrency(trainer.ID, reward); err != nil {
+			// Log error but don't fail - gopher is already deleted
+			log.Printf("Error adding currency after release: %v", err)
+			respondEphemeral(s, i, fmt.Sprintf("Gopher released, but error awarding currency: %v", err))
+			return
+		}
 
 		respondEphemeral(s, i, fmt.Sprintf("Released gopher and received %d GoCoins!", reward))
 		return
@@ -1682,6 +1775,7 @@ func (h *Handlers) gameGopherToStorage(gameGopher *game.Gopher) *storage.Gopher 
 		GopherkonLayers:  gameGopher.GopherkonLayers,
 		StatusEffects:    statusEffectsJSON,
 		Shiny:            gameGopher.Shiny,
+		IsFavorite:       gameGopher.IsFavorite,
 		IsInParty:        gameGopher.IsInParty,
 		PCSlot:           gameGopher.PCSlot,
 	}

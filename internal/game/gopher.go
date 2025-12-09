@@ -67,6 +67,7 @@ type Gopher struct {
 	Abilities       []*Ability
 	StatusEffects   []*StatusEffect // Active status effects
 	Shiny           bool            // Whether this gopher is shiny (rare color variant)
+	IsFavorite      bool            // Whether this gopher is marked as favorite
 	BaseAttack      int // Original attack before stat modifiers
 	BaseDefense     int // Original defense before stat modifiers
 	BaseSpeed       int // Original speed before stat modifiers

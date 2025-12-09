@@ -433,6 +433,7 @@ func (s *Service) StorageGopherToGameGopher(storageGopher *storage.Gopher) (*Gop
 		Abilities:        []*Ability{},
 		StatusEffects:    statusEffects,
 		Shiny:            storageGopher.Shiny,
+		IsFavorite:       storageGopher.IsFavorite,
 		BaseAttack:       storageGopher.Attack,
 		BaseDefense:      storageGopher.Defense,
 		BaseSpeed:        storageGopher.Speed,

@@ -51,6 +51,7 @@ func main() {
 	gopherRepo := storage.NewGopherRepo(db)
 	partyRepo := storage.NewPartyRepo(db, gopherRepo, trainerRepo)
 	battleRepo := storage.NewBattleRepo(db)
+	itemRepo := storage.NewItemRepo(db)
 
 	// Initialize gopherkon generator (now uses gopherize.me artwork structure)
 	log.Println("Initializing sprite generator...")
@@ -93,6 +94,7 @@ func main() {
 		gopherRepo,
 		partyRepo,
 		battleRepo,
+		itemRepo,
 	)
 
 	// Register event handlers

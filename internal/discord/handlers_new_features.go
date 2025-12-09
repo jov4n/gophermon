@@ -2,6 +2,9 @@ package discord
 
 import (
 	"fmt"
+	"log"
+
+	"gophermon-bot/internal/storage"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -18,26 +21,21 @@ func (h *Handlers) handleShop(s *discordgo.Session, i *discordgo.InteractionCrea
 		return
 	}
 
+	// Check for subcommands or default to view
 	if len(data.Options) == 0 {
-		// View shop
-		embed := &discordgo.MessageEmbed{
-			Title:       "🛒 Gopher Shop 🛒",
-			Description: fmt.Sprintf("Your currency: **%d** GoCoins\n\nAvailable items:", trainer.Currency),
-			Color:       0x00ff00,
-			Fields: []*discordgo.MessageEmbedField{
-				{Name: "💊 Potion", Value: "Heals 50 HP\n**Price:** 50 GoCoins", Inline: true},
-				{Name: "💉 Revive", Value: "Restores fainted gopher\n**Price:** 100 GoCoins", Inline: true},
-				{Name: "⚡ XP Booster", Value: "1.5x XP for next battle\n**Price:** 200 GoCoins", Inline: true},
-				{Name: "💎 Evolution Stone", Value: "Force evolution\n**Price:** 500 GoCoins", Inline: true},
-				{Name: "✨ Shiny Charm", Value: "Doubles shiny rate\n**Price:** 1000 GoCoins", Inline: true},
-			},
-		}
-		respondEmbed(s, i, embed, true)
+		// No subcommand - show shop view
+		h.showShopView(s, i, trainer)
 		return
 	}
 
 	subCommand := data.Options[0]
-	if subCommand.Name == "buy" {
+	switch subCommand.Name {
+	case "view":
+		// Explicit view subcommand
+		h.showShopView(s, i, trainer)
+		return
+
+	case "buy":
 		itemType := subCommand.Options[0].StringValue()
 		quantity := 1
 		if len(subCommand.Options) > 1 {
@@ -72,8 +70,38 @@ func (h *Handlers) handleShop(s *discordgo.Session, i *discordgo.InteractionCrea
 			return
 		}
 
+		// Store purchased items
+		if err := h.itemRepo.AddItem(trainer.ID, itemType, quantity); err != nil {
+			// Rollback currency if item storage fails
+			if rollbackErr := h.trainerRepo.AddCurrency(trainer.ID, totalCost); rollbackErr != nil {
+				// Critical: rollback failed - log for manual intervention
+				log.Printf("CRITICAL: Failed to rollback currency after item storage failure. Trainer: %s, Amount: %d, Error: %v", trainer.ID, totalCost, rollbackErr)
+				respondEphemeral(s, i, fmt.Sprintf("Error storing items: %v. CRITICAL: Currency refund failed. Please contact support.", err))
+				return
+			}
+			respondEphemeral(s, i, fmt.Sprintf("Error storing items: %v. Currency has been refunded.", err))
+			return
+		}
+
 		respondEphemeral(s, i, fmt.Sprintf("Purchased %d %s for %d GoCoins!", quantity, itemType, totalCost))
 	}
+}
+
+// showShopView displays the shop embed
+func (h *Handlers) showShopView(s *discordgo.Session, i *discordgo.InteractionCreate, trainer *storage.Trainer) {
+	embed := &discordgo.MessageEmbed{
+		Title:       "🛒 Gopher Shop 🛒",
+		Description: fmt.Sprintf("Your currency: **%d** GoCoins\n\nAvailable items:", trainer.Currency),
+		Color:       0x00ff00,
+		Fields: []*discordgo.MessageEmbedField{
+			{Name: "💊 Potion", Value: "Heals 50 HP\n**Price:** 50 GoCoins", Inline: true},
+			{Name: "💉 Revive", Value: "Restores fainted gopher\n**Price:** 100 GoCoins", Inline: true},
+			{Name: "⚡ XP Booster", Value: "1.5x XP for next battle\n**Price:** 200 GoCoins", Inline: true},
+			{Name: "💎 Evolution Stone", Value: "Force evolution\n**Price:** 500 GoCoins", Inline: true},
+			{Name: "✨ Shiny Charm", Value: "Doubles shiny rate\n**Price:** 1000 GoCoins", Inline: true},
+		},
+	}
+	respondEmbed(s, i, embed, true)
 }
 
 func (h *Handlers) handleAchievements(s *discordgo.Session, i *discordgo.InteractionCreate) {

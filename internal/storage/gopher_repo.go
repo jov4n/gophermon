@@ -31,6 +31,7 @@ type Gopher struct {
 	GopherkonLayers []string // Will be stored as JSON
 	StatusEffects   string  // JSON string of status effects
 	Shiny           bool    // Whether this gopher is shiny (rare color variant)
+	IsFavorite      bool    // Whether this gopher is marked as favorite
 	IsInParty       bool
 	PCSlot          *int
 	CreatedAt       time.Time
@@ -64,15 +65,15 @@ func (r *GopherRepo) Create(g *Gopher) (*Gopher, error) {
 		id, trainer_id, name, level, xp, current_hp, max_hp, 
 		attack, defense, speed, rarity, complexity_score, 
 		species_archetype, evolution_stage, primary_type, secondary_type,
-		sprite_path, sprite_data, gopherkon_layers, status_effects, shiny, is_in_party, pc_slot
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		sprite_path, sprite_data, gopherkon_layers, status_effects, shiny, is_favorite, is_in_party, pc_slot
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, err = r.db.Conn().Exec(query,
 		g.ID, g.TrainerID, g.Name, g.Level, g.XP,
 		g.CurrentHP, g.MaxHP, g.Attack, g.Defense, g.Speed,
 		g.Rarity, g.ComplexityScore, g.SpeciesArchetype,
 		g.EvolutionStage, g.PrimaryType, g.SecondaryType,
-		g.SpritePath, g.SpriteData, string(layersJSON), statusEffectsJSON, g.Shiny,
+		g.SpritePath, g.SpriteData, string(layersJSON), statusEffectsJSON, g.Shiny, g.IsFavorite,
 		g.IsInParty, g.PCSlot,
 	)
 
@@ -87,7 +88,7 @@ func (r *GopherRepo) GetByID(id string) (*Gopher, error) {
 	query := `SELECT id, trainer_id, name, level, xp, current_hp, max_hp,
 	          attack, defense, speed, rarity, complexity_score,
 	          species_archetype, evolution_stage, primary_type, secondary_type,
-	          sprite_path, sprite_data, gopherkon_layers, status_effects, shiny, is_in_party, pc_slot, created_at
+	          sprite_path, sprite_data, gopherkon_layers, status_effects, shiny, is_favorite, is_in_party, pc_slot, created_at
 	          FROM gophers WHERE id = ?`
 
 	var g Gopher
@@ -106,7 +107,7 @@ func (r *GopherRepo) GetByID(id string) (*Gopher, error) {
 		&g.CurrentHP, &g.MaxHP, &g.Attack, &g.Defense, &g.Speed,
 		&g.Rarity, &g.ComplexityScore, &g.SpeciesArchetype,
 		&g.EvolutionStage, &primaryType, &secondaryType,
-		&spritePath, &spriteData, &layersJSON, &statusEffectsJSON, &g.Shiny,
+		&spritePath, &spriteData, &layersJSON, &statusEffectsJSON, &g.Shiny, &g.IsFavorite,
 		&g.IsInParty, &pcSlot, &createdAt,
 	)
 
@@ -155,7 +156,7 @@ func (r *GopherRepo) GetByTrainerID(trainerID string) ([]*Gopher, error) {
 	query := `SELECT id, trainer_id, name, level, xp, current_hp, max_hp,
 	          attack, defense, speed, rarity, complexity_score,
 	          species_archetype, evolution_stage, primary_type, secondary_type,
-	          sprite_path, sprite_data, gopherkon_layers, status_effects, shiny, is_in_party, pc_slot, created_at
+	          sprite_path, sprite_data, gopherkon_layers, status_effects, shiny, is_favorite, is_in_party, pc_slot, created_at
 	          FROM gophers WHERE trainer_id = ? ORDER BY is_in_party DESC, created_at ASC`
 
 	rows, err := r.db.Conn().Query(query, trainerID)
@@ -180,7 +181,7 @@ func (r *GopherRepo) GetParty(trainerID string) ([]*Gopher, error) {
 	query := `SELECT id, trainer_id, name, level, xp, current_hp, max_hp,
 	          attack, defense, speed, rarity, complexity_score,
 	          species_archetype, evolution_stage, primary_type, secondary_type,
-	          sprite_path, sprite_data, gopherkon_layers, status_effects, shiny, is_in_party, pc_slot, created_at
+	          sprite_path, sprite_data, gopherkon_layers, status_effects, shiny, is_favorite, is_in_party, pc_slot, created_at
 	          FROM gophers WHERE trainer_id = ? AND is_in_party = TRUE
 	          ORDER BY created_at ASC LIMIT 6`
 
@@ -206,7 +207,7 @@ func (r *GopherRepo) GetPC(trainerID string, limit, offset int) ([]*Gopher, erro
 	query := `SELECT id, trainer_id, name, level, xp, current_hp, max_hp,
 	          attack, defense, speed, rarity, complexity_score,
 	          species_archetype, evolution_stage, primary_type, secondary_type,
-	          sprite_path, sprite_data, gopherkon_layers, status_effects, shiny, is_in_party, pc_slot, created_at
+	          sprite_path, sprite_data, gopherkon_layers, status_effects, shiny, is_favorite, is_in_party, pc_slot, created_at
 	          FROM gophers WHERE trainer_id = ? AND is_in_party = FALSE
 	          ORDER BY pc_slot ASC LIMIT ? OFFSET ?`
 
@@ -245,7 +246,7 @@ func (r *GopherRepo) Update(g *Gopher) error {
 		attack = ?, defense = ?, speed = ?, rarity = ?,
 		complexity_score = ?, species_archetype = ?,
 		evolution_stage = ?, primary_type = ?, secondary_type = ?,
-		sprite_path = ?, sprite_data = ?, gopherkon_layers = ?, status_effects = ?, shiny = ?,
+		sprite_path = ?, sprite_data = ?, gopherkon_layers = ?, status_effects = ?, shiny = ?, is_favorite = ?,
 		is_in_party = ?, pc_slot = ?
 		WHERE id = ?`
 
@@ -254,7 +255,7 @@ func (r *GopherRepo) Update(g *Gopher) error {
 		g.Attack, g.Defense, g.Speed, g.Rarity,
 		g.ComplexityScore, g.SpeciesArchetype,
 		g.EvolutionStage, g.PrimaryType, g.SecondaryType,
-		g.SpritePath, g.SpriteData, string(layersJSON), statusEffectsJSON, g.Shiny,
+		g.SpritePath, g.SpriteData, string(layersJSON), statusEffectsJSON, g.Shiny, g.IsFavorite,
 		g.IsInParty, g.PCSlot, g.ID,
 	)
 
@@ -292,7 +293,7 @@ func (r *GopherRepo) scanGopherRow(rows *sql.Rows) (*Gopher, error) {
 		&g.CurrentHP, &g.MaxHP, &g.Attack, &g.Defense, &g.Speed,
 		&g.Rarity, &g.ComplexityScore, &g.SpeciesArchetype,
 		&g.EvolutionStage, &primaryType, &secondaryType,
-		&spritePath, &spriteData, &layersJSON, &statusEffectsJSON, &g.Shiny,
+		&spritePath, &spriteData, &layersJSON, &statusEffectsJSON, &g.Shiny, &g.IsFavorite,
 		&g.IsInParty, &pcSlot, &createdAt,
 	)
 	if err != nil {
