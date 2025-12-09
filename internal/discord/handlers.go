@@ -19,13 +19,13 @@ import (
 )
 
 type Handlers struct {
-	gameService *game.Service
-	trainerRepo *storage.TrainerRepo
-	gopherRepo  *storage.GopherRepo
-	partyRepo   *storage.PartyRepo
-	battleRepo  *storage.BattleRepo
-	battles     map[string]*game.BattleState // In-memory battle cache
-	starterSessions map[string][]string      // Session ID -> starter gopher IDs
+	gameService     *game.Service
+	trainerRepo     *storage.TrainerRepo
+	gopherRepo      *storage.GopherRepo
+	partyRepo       *storage.PartyRepo
+	battleRepo      *storage.BattleRepo
+	battles         map[string]*game.BattleState // In-memory battle cache
+	starterSessions map[string][]string          // Session ID -> starter gopher IDs
 }
 
 func NewHandlers(
@@ -36,13 +36,13 @@ func NewHandlers(
 	battleRepo *storage.BattleRepo,
 ) *Handlers {
 	return &Handlers{
-		gameService: gameService,
-		trainerRepo: trainerRepo,
-		gopherRepo:  gopherRepo,
-		partyRepo:   partyRepo,
-		battleRepo:  battleRepo,
-		battles:          make(map[string]*game.BattleState),
-		starterSessions:  make(map[string][]string),
+		gameService:     gameService,
+		trainerRepo:     trainerRepo,
+		gopherRepo:      gopherRepo,
+		partyRepo:       partyRepo,
+		battleRepo:      battleRepo,
+		battles:         make(map[string]*game.BattleState),
+		starterSessions: make(map[string][]string),
 	}
 }
 
@@ -75,6 +75,8 @@ func (h *Handlers) handleCommand(s *discordgo.Session, i *discordgo.InteractionC
 		h.handleGopher(s, i)
 	case "generate_10":
 		h.handleGenerate10(s, i)
+	case "events":
+		h.handleEvents(s, i)
 	default:
 		respondEphemeral(s, i, "Unknown command")
 	}
@@ -159,7 +161,7 @@ func (h *Handlers) handleStart(s *discordgo.Session, i *discordgo.InteractionCre
 	cardBase64, err := h.gameService.GenerateStarterCard(starters)
 	var cardFile *discordgo.File
 	var imageURL string
-	
+
 	if err == nil && cardBase64 != "" {
 		// Decode base64 to bytes
 		if fileData, err := base64.StdEncoding.DecodeString(cardBase64); err == nil {
@@ -202,7 +204,7 @@ func (h *Handlers) handleStart(s *discordgo.Session, i *discordgo.InteractionCre
 	// Create a short session ID to store starter IDs and card path
 	sessionID := fmt.Sprintf("%d", time.Now().UnixNano()%1000000) // 6-7 digit number
 	h.starterSessions[sessionID] = starterIDs
-	
+
 	// Store card path in session for cleanup (we'll store it with a prefix in the session map)
 	// Actually, let's store it separately or append to starterIDs with a marker
 	// For now, we'll delete it in handleChooseStarter
@@ -225,7 +227,7 @@ func (h *Handlers) handleStart(s *discordgo.Session, i *discordgo.InteractionCre
 			Data: &discordgo.InteractionResponseData{
 				Embeds:     []*discordgo.MessageEmbed{embed},
 				Components: components,
-				Files:     []*discordgo.File{cardFile},
+				Files:      []*discordgo.File{cardFile},
 			},
 		})
 		if err != nil {
@@ -282,7 +284,7 @@ func (h *Handlers) handleChooseStarter(s *discordgo.Session, i *discordgo.Intera
 		if starterID == chosenID {
 			continue // Skip the chosen one
 		}
-		
+
 		// Delete from database
 		h.gopherRepo.Delete(starterID)
 	}
@@ -383,11 +385,11 @@ func (h *Handlers) handleChooseStarter(s *discordgo.Session, i *discordgo.Intera
 	webhookParams := &discordgo.WebhookParams{
 		Embeds: []*discordgo.MessageEmbed{embed},
 	}
-	
+
 	if chosenGopherFile != nil {
 		webhookParams.Files = []*discordgo.File{chosenGopherFile}
 	}
-	
+
 	_, err = s.FollowupMessageCreate(i.Interaction, false, webhookParams)
 	if err != nil {
 		log.Printf("Error sending followup message: %v", err)
@@ -491,8 +493,8 @@ func (h *Handlers) handlePC(s *discordgo.Session, i *discordgo.InteractionCreate
 		for _, gopher := range pcGophers {
 			hpBar := game.GetHPBar(gopher.CurrentHP, gopher.MaxHP, 8)
 			embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
-				Name: fmt.Sprintf("%s (ID: %s)", gopher.Name, gopher.ID[:8]),
-				Value: fmt.Sprintf("Lv.%d | %s | %s | %s", gopher.Level, hpBar, gopher.SpeciesArchetype, gopher.Rarity),
+				Name:   fmt.Sprintf("%s (ID: %s)", gopher.Name, gopher.ID[:8]),
+				Value:  fmt.Sprintf("Lv.%d | %s | %s | %s", gopher.Level, hpBar, gopher.SpeciesArchetype, gopher.Rarity),
 				Inline: true,
 			})
 		}
@@ -595,7 +597,7 @@ func (h *Handlers) handleWild(s *discordgo.Session, i *discordgo.InteractionCrea
 		respondEphemeral(s, i, fmt.Sprintf("Error getting party: %v", err))
 		return
 	}
-	
+
 	// Convert party to game gophers
 	gameParty := make([]*game.Gopher, len(partyStorage))
 	for idx, gopherStorage := range partyStorage {
@@ -607,8 +609,8 @@ func (h *Handlers) handleWild(s *discordgo.Session, i *discordgo.InteractionCrea
 		gameParty[idx] = gameGopher
 	}
 
-	// Create battle state with party
-	battleState := game.NewBattleState(trainer.ID, i.ChannelID, playerGopher, enemyGopher, gameParty)
+	// Create battle state with party and event manager
+	battleState := game.NewBattleState(trainer.ID, i.ChannelID, playerGopher, enemyGopher, gameParty, h.gameService.GetEventManager())
 	battleState.ID = uuid.New().String()
 
 	// Create battle embed
@@ -620,8 +622,8 @@ func (h *Handlers) handleWild(s *discordgo.Session, i *discordgo.InteractionCrea
 	// Generate battle card with both gophers (enemy on top, player on bottom) - returns base64
 	var battleCardFile *discordgo.File
 	var battleImageURL string
-	if (playerGopherStorage.SpriteData != "" || playerGopherStorage.SpritePath != "") && 
-	   (wildGopherStorage.SpriteData != "" || wildGopherStorage.SpritePath != "") {
+	if (playerGopherStorage.SpriteData != "" || playerGopherStorage.SpritePath != "") &&
+		(wildGopherStorage.SpriteData != "" || wildGopherStorage.SpritePath != "") {
 		cardBase64, err := h.gameService.GenerateBattleCard(wildGopherStorage, playerGopherStorage)
 		if err != nil {
 			log.Printf("Error generating battle card: %v", err)
@@ -664,15 +666,15 @@ func (h *Handlers) handleWild(s *discordgo.Session, i *discordgo.InteractionCrea
 
 	// Save battle to DB
 	battle := &storage.Battle{
-		ID:            battleState.ID,
-		ChannelID:     battleState.ChannelID,
-		MessageID:     battleState.MessageID,
-		TrainerID:     battleState.TrainerID,
-		OpponentType:  "WILD",
+		ID:             battleState.ID,
+		ChannelID:      battleState.ChannelID,
+		MessageID:      battleState.MessageID,
+		TrainerID:      battleState.TrainerID,
+		OpponentType:   "WILD",
 		GopherIDPlayer: &playerGopher.ID,
 		GopherIDEnemy:  &enemyGopher.ID,
-		TurnOwner:     battleState.TurnOwner,
-		State:         battleState.State,
+		TurnOwner:      battleState.TurnOwner,
+		State:          battleState.State,
 	}
 	_, err = h.battleRepo.Create(battle)
 	if err != nil {
@@ -790,10 +792,12 @@ func (h *Handlers) handleGenerate10(s *discordgo.Session, i *discordgo.Interacti
 		var gophers []*storage.Gopher
 		seedOffset := int64(0)
 
-		// Generate 3 of each rarity
+		// Generate 3 of each rarity, with the first one being shiny
 		for _, rarity := range rarities {
 			for j := 0; j < 3; j++ {
-				gopher, err := h.gameService.GenerateGopherWithRarity(rarity, seedOffset)
+				// First gopher of each rarity is guaranteed shiny
+				forceShiny := j == 0
+				gopher, err := h.gameService.GenerateGopherWithRarityAndShiny(rarity, seedOffset, forceShiny)
 				if err != nil {
 					s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
 						Content: fmt.Sprintf("Error generating %s gopher %d: %v", rarity, j+1, err),
@@ -838,7 +842,7 @@ func (h *Handlers) handleGenerate10(s *discordgo.Session, i *discordgo.Interacti
 		// Create embed
 		embed := &discordgo.MessageEmbed{
 			Title:       "Generated 15 Gophers (3 of Each Rarity)",
-			Description: "3 COMMON | 3 UNCOMMON | 3 RARE | 3 EPIC | 3 LEGENDARY\n\nArranged in a 5x3 grid showing all rarity tiers!",
+			Description: "3 COMMON | 3 UNCOMMON | 3 RARE | 3 EPIC | 3 LEGENDARY\n\n✨ **One shiny of each tier!** ✨\n\nArranged in a 5x3 grid showing all rarity tiers!",
 			Color:       0x00ff00,
 			Image: &discordgo.MessageEmbedImage{
 				URL: imageURL,
@@ -857,6 +861,180 @@ func (h *Handlers) handleGenerate10(s *discordgo.Session, i *discordgo.Interacti
 
 		// No cleanup needed - sprites are stored as base64 in database
 	}()
+}
+
+func (h *Handlers) handleEvents(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	data := i.ApplicationCommandData()
+	subCommand := data.Options[0].Name
+
+	switch subCommand {
+	case "list":
+		h.handleEventsList(s, i)
+	case "start":
+		h.handleEventsStart(s, i)
+	case "end":
+		h.handleEventsEnd(s, i)
+	default:
+		respondEphemeral(s, i, "Unknown event subcommand")
+	}
+}
+
+func (h *Handlers) handleEventsList(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	eventManager := h.gameService.GetEventManager()
+	activeEvents := eventManager.GetActiveEvents()
+
+	if len(activeEvents) == 0 {
+		respondEphemeral(s, i, "No active events at the moment. Check back later!")
+		return
+	}
+
+	var description strings.Builder
+	for _, event := range activeEvents {
+		timeRemaining := time.Until(event.EndTime)
+		hours := int(timeRemaining.Hours())
+		minutes := int(timeRemaining.Minutes()) % 60
+
+		description.WriteString(fmt.Sprintf("**%s**\n", event.Name))
+		description.WriteString(fmt.Sprintf("%s\n", event.Description))
+		description.WriteString(fmt.Sprintf("⏰ Time remaining: %dh %dm\n\n", hours, minutes))
+	}
+
+	embed := &discordgo.MessageEmbed{
+		Title:       "🎉 Active Events 🎉",
+		Description: description.String(),
+		Color:       0x00ff00,
+		Timestamp:   time.Now().Format(time.RFC3339),
+	}
+
+	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Embeds: []*discordgo.MessageEmbed{embed},
+		},
+	})
+}
+
+// isAdmin checks if a user has admin permissions
+func (h *Handlers) isAdmin(s *discordgo.Session, i *discordgo.InteractionCreate) bool {
+	// Check if user has Administrator permission
+	if i.Member != nil && i.Member.Permissions&discordgo.PermissionAdministrator != 0 {
+		return true
+	}
+
+	// Check if user is the guild owner
+	// Must check i.Member != nil before accessing i.Member.User.ID
+	if i.GuildID != "" && i.Member != nil && i.Member.User != nil {
+		guild, err := s.Guild(i.GuildID)
+		if err == nil && guild != nil && guild.OwnerID == i.Member.User.ID {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (h *Handlers) handleEventsStart(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	// Check if user has admin permissions
+	if !h.isAdmin(s, i) {
+		respondEphemeral(s, i, "❌ You need Administrator permissions to start events!")
+		return
+	}
+
+	data := i.ApplicationCommandData()
+	options := data.Options[0].Options
+
+	var eventType game.EventType
+	var hours int = 24 // Default 24 hours
+
+	for _, opt := range options {
+		switch opt.Name {
+		case "type":
+			eventType = game.EventType(opt.StringValue())
+		case "hours":
+			hours = int(opt.IntValue())
+			if hours < 1 {
+				hours = 1
+			}
+			if hours > 168 { // Max 1 week
+				hours = 168
+			}
+		}
+	}
+
+	eventManager := h.gameService.GetEventManager()
+	duration := time.Duration(hours) * time.Hour
+	event := eventManager.StartEvent(eventType, duration)
+
+	// Announce event in channel
+	embed := &discordgo.MessageEmbed{
+		Title:       fmt.Sprintf("🎉 %s Started! 🎉", event.Name),
+		Description: fmt.Sprintf("%s\n\n⏰ Duration: %d hours\n\nGet out there and enjoy the event!", event.Description, hours),
+		Color:       0xffd700, // Gold color
+		Timestamp:   time.Now().Format(time.RFC3339),
+	}
+
+	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Embeds: []*discordgo.MessageEmbed{embed},
+		},
+	})
+
+	// Also send announcement to channel if configured
+	channelID := eventManager.GetAnnouncementChannel()
+	if channelID != "" {
+		s.ChannelMessageSendEmbed(channelID, embed)
+	}
+}
+
+func (h *Handlers) handleEventsEnd(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	// Check if user has admin permissions
+	if !h.isAdmin(s, i) {
+		respondEphemeral(s, i, "❌ You need Administrator permissions to end events!")
+		return
+	}
+
+	data := i.ApplicationCommandData()
+	options := data.Options[0].Options
+
+	var eventType game.EventType
+	for _, opt := range options {
+		if opt.Name == "type" {
+			eventType = game.EventType(opt.StringValue())
+			break
+		}
+	}
+
+	eventManager := h.gameService.GetEventManager()
+	activeEvent := eventManager.GetActiveEventByType(eventType)
+
+	if activeEvent == nil {
+		respondEphemeral(s, i, fmt.Sprintf("❌ No active %s event found!", eventType))
+		return
+	}
+
+	// End the event
+	eventManager.EndEvent(activeEvent.ID)
+
+	embed := &discordgo.MessageEmbed{
+		Title:       fmt.Sprintf("🔚 %s Ended", activeEvent.Name),
+		Description: fmt.Sprintf("The %s event has been manually ended by an administrator.", activeEvent.Name),
+		Color:       0xff0000, // Red color
+		Timestamp:   time.Now().Format(time.RFC3339),
+	}
+
+	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Embeds: []*discordgo.MessageEmbed{embed},
+		},
+	})
+
+	// Also send announcement to channel if configured
+	channelID := eventManager.GetAnnouncementChannel()
+	if channelID != "" {
+		s.ChannelMessageSendEmbed(channelID, embed)
+	}
 }
 
 func (h *Handlers) handleBattleAction(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -936,7 +1114,7 @@ func (h *Handlers) handleBattleAction(s *discordgo.Session, i *discordgo.Interac
 			// Check if this gopher is at an evolution threshold
 			shouldCheckEvolution := (gopher.Level >= 16 && gopher.EvolutionStage == 0) ||
 				(gopher.Level >= 32 && gopher.EvolutionStage == 1)
-			
+
 			if shouldCheckEvolution {
 				evolved, evolutionMsg := h.gameService.CheckEvolution(gopher)
 				if evolved {
@@ -953,10 +1131,10 @@ func (h *Handlers) handleBattleAction(s *discordgo.Session, i *discordgo.Interac
 	for _, gopher := range battleState.ParticipatingGophers {
 		h.gopherRepo.Update(h.gameGopherToStorage(gopher))
 	}
-	
+
 	// Update active player gopher (in case it wasn't in participating list)
 	h.gopherRepo.Update(h.gameGopherToStorage(battleState.PlayerGopher))
-	
+
 	// Update all party members in DB to ensure HP is saved
 	partyStorage, _ := h.gopherRepo.GetParty(battleState.TrainerID)
 	for _, partyGopher := range partyStorage {
@@ -970,7 +1148,7 @@ func (h *Handlers) handleBattleAction(s *discordgo.Session, i *discordgo.Interac
 			}
 		}
 	}
-	
+
 	if battleState.State != "WON" && battleState.State != "ESCAPED" {
 		h.gopherRepo.Update(h.gameGopherToStorage(battleState.EnemyGopher))
 	}
@@ -1004,7 +1182,7 @@ func (h *Handlers) handleBattleAction(s *discordgo.Session, i *discordgo.Interac
 	// Update embed with battle card image (don't regenerate for regular actions)
 	embed := h.createBattleEmbed(battleState)
 	h.addBattleCardToEmbed(embed, battleState, false) // false = don't regenerate, just reference existing
-	
+
 	var components []discordgo.MessageComponent
 	if battleState.State == "ACTIVE" {
 		components = h.createBattleButtons(battleState, false)
@@ -1079,7 +1257,7 @@ func (h *Handlers) handleBattleAbility(s *discordgo.Session, i *discordgo.Intera
 			// Check if this gopher is at an evolution threshold
 			shouldCheckEvolution := (gopher.Level >= 16 && gopher.EvolutionStage == 0) ||
 				(gopher.Level >= 32 && gopher.EvolutionStage == 1)
-			
+
 			if shouldCheckEvolution {
 				evolved, evolutionMsg := h.gameService.CheckEvolution(gopher)
 				if evolved {
@@ -1096,10 +1274,10 @@ func (h *Handlers) handleBattleAbility(s *discordgo.Session, i *discordgo.Intera
 	for _, gopher := range battleState.ParticipatingGophers {
 		h.gopherRepo.Update(h.gameGopherToStorage(gopher))
 	}
-	
+
 	// Update active player gopher (in case it wasn't in participating list)
 	h.gopherRepo.Update(h.gameGopherToStorage(battleState.PlayerGopher))
-	
+
 	// Update all party members in DB to ensure HP is saved
 	partyStorage, _ := h.gopherRepo.GetParty(battleState.TrainerID)
 	for _, partyGopher := range partyStorage {
@@ -1113,7 +1291,7 @@ func (h *Handlers) handleBattleAbility(s *discordgo.Session, i *discordgo.Intera
 			}
 		}
 	}
-	
+
 	if battleState.State != "WON" && battleState.State != "ESCAPED" {
 		h.gopherRepo.Update(h.gameGopherToStorage(battleState.EnemyGopher))
 	}
@@ -1150,7 +1328,7 @@ func (h *Handlers) handleBattleAbility(s *discordgo.Session, i *discordgo.Intera
 	// Update embed with battle card image (don't regenerate for regular actions)
 	embed := h.createBattleEmbed(battleState)
 	h.addBattleCardToEmbed(embed, battleState, false) // false = don't regenerate, just reference existing
-	
+
 	var components []discordgo.MessageComponent
 	if battleState.State == "ACTIVE" {
 		components = h.createBattleButtons(battleState, false)
@@ -1192,17 +1370,18 @@ func (h *Handlers) findBattleByMessage(channelID, messageID string) *game.Battle
 	}
 
 	battleState := &game.BattleState{
-		ID:                battle.ID,
-		ChannelID:         battle.ChannelID,
-		MessageID:         battle.MessageID,
-		TrainerID:          battle.TrainerID,
-		OpponentType:      battle.OpponentType,
-		PlayerGopher:      playerGopher,
-		EnemyGopher:       enemyGopher,
-		PlayerParty:       gameParty,
+		ID:                   battle.ID,
+		ChannelID:            battle.ChannelID,
+		MessageID:            battle.MessageID,
+		TrainerID:            battle.TrainerID,
+		OpponentType:         battle.OpponentType,
+		PlayerGopher:         playerGopher,
+		EnemyGopher:          enemyGopher,
+		PlayerParty:          gameParty,
 		ParticipatingGophers: []*game.Gopher{playerGopher}, // Initialize with current
-		TurnOwner:         battle.TurnOwner,
-		State:             battle.State,
+		TurnOwner:            battle.TurnOwner,
+		State:                battle.State,
+		EventManager:         h.gameService.GetEventManager(), // Add event manager
 	}
 
 	h.battles[battleState.ID] = battleState
@@ -1262,17 +1441,17 @@ func (h *Handlers) createBattleEmbed(battleState *game.BattleState) *discordgo.M
 }
 
 // addBattleCardToEmbed adds the battle card image reference to the embed
-// Set forceRegen=true to force regeneration (e.g., after swap), false to just reference existing
+// Set forceRegen=true to force regeneration (e.g., after swap), false to preserve existing
 func (h *Handlers) addBattleCardToEmbed(embed *discordgo.MessageEmbed, battleState *game.BattleState, forceRegen bool) {
 	fileName := fmt.Sprintf("battle_%s.png", battleState.ID[:8])
 	imageURL := fmt.Sprintf("attachment://%s", fileName)
-	
+
 	if forceRegen {
 		// Only regenerate if explicitly requested (e.g., after gopher swap)
 		// This is expensive, so we avoid it for regular updates
 		playerStorage := h.gameGopherToStorage(battleState.PlayerGopher)
 		enemyStorage := h.gameGopherToStorage(battleState.EnemyGopher)
-		
+
 		cardBase64, err := h.gameService.GenerateBattleCard(enemyStorage, playerStorage)
 		if err != nil {
 			log.Printf("Error regenerating battle card: %v", err)
@@ -1286,11 +1465,11 @@ func (h *Handlers) addBattleCardToEmbed(embed *discordgo.MessageEmbed, battleSta
 			return
 		}
 	}
-	
-	// For regular updates, just reference the existing attachment
-	embed.Image = &discordgo.MessageEmbedImage{
-		URL: imageURL,
-	}
+
+	// For regular updates, don't set the image URL at all
+	// Discord MessageEdit cannot resolve attachment:// URLs without the file
+	// The existing message already has the image, so we leave embed.Image as nil
+	// This preserves the existing image attachment
 }
 
 func (h *Handlers) createBattleButtons(battleState *game.BattleState, showAbilities bool) []discordgo.MessageComponent {
@@ -1326,9 +1505,18 @@ func (h *Handlers) createBattleButtons(battleState *game.BattleState, showAbilit
 }
 
 func (h *Handlers) gameGopherToStorage(gameGopher *game.Gopher) *storage.Gopher {
+	// Serialize status effects to JSON
+	statusEffectsJSON := "[]"
+	if len(gameGopher.StatusEffects) > 0 {
+		statusEffectsBytes, err := json.Marshal(gameGopher.StatusEffects)
+		if err == nil {
+			statusEffectsJSON = string(statusEffectsBytes)
+		}
+	}
+
 	return &storage.Gopher{
 		ID:               gameGopher.ID,
-		TrainerID:       gameGopher.TrainerID,
+		TrainerID:        gameGopher.TrainerID,
 		Name:             gameGopher.Name,
 		Level:            gameGopher.Level,
 		XP:               gameGopher.XP,
@@ -1346,6 +1534,8 @@ func (h *Handlers) gameGopherToStorage(gameGopher *game.Gopher) *storage.Gopher 
 		SpritePath:       gameGopher.SpritePath,
 		SpriteData:       gameGopher.SpriteData,
 		GopherkonLayers:  gameGopher.GopherkonLayers,
+		StatusEffects:    statusEffectsJSON,
+		Shiny:            gameGopher.Shiny,
 		IsInParty:        gameGopher.IsInParty,
 		PCSlot:           gameGopher.PCSlot,
 	}
@@ -1371,11 +1561,11 @@ func (b *ButtonWithoutEmoji) MarshalJSON() ([]byte, error) {
 	// Custom marshaler that includes the type field
 	return json.Marshal(struct {
 		Type     discordgo.ComponentType `json:"type"`
-		Label    string                   `json:"label"`
-		Style    discordgo.ButtonStyle    `json:"style"`
-		Disabled bool                     `json:"disabled,omitempty"`
-		URL      string                   `json:"url,omitempty"`
-		CustomID string                   `json:"custom_id,omitempty"`
+		Label    string                  `json:"label"`
+		Style    discordgo.ButtonStyle   `json:"style"`
+		Disabled bool                    `json:"disabled,omitempty"`
+		URL      string                  `json:"url,omitempty"`
+		CustomID string                  `json:"custom_id,omitempty"`
 	}{
 		Type:     discordgo.ButtonComponent,
 		Label:    b.Label,
@@ -1457,24 +1647,24 @@ func respondWithComponents(s *discordgo.Session, i *discordgo.InteractionCreate,
 func (h *Handlers) editBattleMessage(s *discordgo.Session, i *discordgo.InteractionCreate, content string, embed *discordgo.MessageEmbed, components []discordgo.MessageComponent) {
 	// Find battle state
 	battleState := h.findBattleByMessage(i.ChannelID, i.Message.ID)
-	
+
 	// Only regenerate image if embed explicitly requests it (e.g., after swap)
 	// For regular updates, just preserve the existing attachment
 	needsImageRegen := embed != nil && embed.Image != nil && embed.Image.URL != ""
-	
+
 	if battleState != nil && needsImageRegen {
 		// Only regenerate if we actually need a new image (e.g., gopher swapped)
 		// This is expensive, so we avoid it for regular HP/status updates
 		playerStorage := h.gameGopherToStorage(battleState.PlayerGopher)
 		enemyStorage := h.gameGopherToStorage(battleState.EnemyGopher)
-		
+
 		cardBase64, err := h.gameService.GenerateBattleCard(enemyStorage, playerStorage)
 		if err == nil && cardBase64 != "" {
 			// Decode base64 to bytes
 			fileData, err := base64.StdEncoding.DecodeString(cardBase64)
 			if err == nil {
 				fileName := fmt.Sprintf("battle_%s.png", battleState.ID[:8])
-				
+
 				// Delete old message and send new one with updated image
 				err = s.ChannelMessageDelete(i.ChannelID, i.Message.ID)
 				if err != nil {
@@ -1482,23 +1672,23 @@ func (h *Handlers) editBattleMessage(s *discordgo.Session, i *discordgo.Interact
 					h.editBattleMessageSimple(s, i, content, embed, components)
 					return
 				}
-				
+
 				// Create new message with updated battle card
 				battleCardFile := &discordgo.File{
 					Name:        fileName,
 					ContentType: "image/png",
 					Reader:      bytes.NewReader(fileData),
 				}
-				
+
 				embed.Image.URL = fmt.Sprintf("attachment://%s", fileName)
-				
+
 				msgSend := &discordgo.MessageSend{
 					Content:    content,
 					Embeds:     []*discordgo.MessageEmbed{embed},
 					Components: components,
 					Files:      []*discordgo.File{battleCardFile},
 				}
-				
+
 				msg, err := s.ChannelMessageSendComplex(i.ChannelID, msgSend)
 				if err != nil {
 					log.Printf("Error sending updated battle message: %v", err)
@@ -1516,17 +1706,10 @@ func (h *Handlers) editBattleMessage(s *discordgo.Session, i *discordgo.Interact
 			}
 		}
 	}
-	
+
 	// For regular updates, just do a simple edit that preserves existing attachment
-	// Set image URL to reference the original attachment if not already set
-	if battleState != nil && embed != nil && embed.Image == nil {
-		// Preserve the original image attachment by referencing it
-		fileName := fmt.Sprintf("battle_%s.png", battleState.ID[:8])
-		embed.Image = &discordgo.MessageEmbedImage{
-			URL: fmt.Sprintf("attachment://%s", fileName),
-		}
-	}
-	
+	// Don't set embed.Image at all - Discord MessageEdit preserves existing attachments
+	// Setting attachment:// URL without the file breaks the image
 	h.editBattleMessageSimple(s, i, content, embed, components)
 }
 
@@ -1606,19 +1789,19 @@ func (h *Handlers) showPartySwapMenu(s *discordgo.Session, i *discordgo.Interact
 		if gopher.ID == battleState.PlayerGopher.ID {
 			continue // Skip current gopher
 		}
-		
+
 		status := ""
 		if gopher.CurrentHP <= 0 {
 			status = " (FAINTED)"
 		}
-		
+
 		label := fmt.Sprintf("%s%s", gopher.Name, status)
 		if len(label) > 80 {
 			label = label[:77] + "..."
 		}
-		
+
 		buttons = append(buttons, createButton(label, discordgo.SecondaryButton, fmt.Sprintf("battle_swap_%d", idx)))
-		
+
 		if len(buttons) >= 5 {
 			break // Discord limit
 		}
@@ -1633,7 +1816,7 @@ func (h *Handlers) showPartySwapMenu(s *discordgo.Session, i *discordgo.Interact
 	embed := h.createBattleEmbed(battleState)
 	embed.Description = "Choose a party member to swap to:"
 	h.addBattleCardToEmbed(embed, battleState, false) // false = don't regenerate for menu
-	
+
 	h.editBattleMessage(s, i, "", embed, []discordgo.MessageComponent{
 		discordgo.ActionsRow{Components: buttons},
 	})
@@ -1700,7 +1883,7 @@ func (h *Handlers) handleBattleSwap(s *discordgo.Session, i *discordgo.Interacti
 	// Update embed with battle card image (don't regenerate for regular actions)
 	embed := h.createBattleEmbed(battleState)
 	h.addBattleCardToEmbed(embed, battleState, false) // false = don't regenerate, just reference existing
-	
+
 	var components []discordgo.MessageComponent
 	if battleState.State == "ACTIVE" {
 		components = h.createBattleButtons(battleState, false)

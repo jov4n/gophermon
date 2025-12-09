@@ -66,6 +66,7 @@ type Gopher struct {
 	PCSlot          *int
 	Abilities       []*Ability
 	StatusEffects   []*StatusEffect // Active status effects
+	Shiny           bool            // Whether this gopher is shiny (rare color variant)
 	BaseAttack      int // Original attack before stat modifiers
 	BaseDefense     int // Original defense before stat modifiers
 	BaseSpeed       int // Original speed before stat modifiers

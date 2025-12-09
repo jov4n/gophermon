@@ -107,6 +107,65 @@ func RegisterCommands(s *discordgo.Session, guildID string) error {
 			Name:        "generate_10",
 			Description: "Generate 10 random gophers on a card to test generation",
 		},
+		{
+			Name:        "events",
+			Description: "View and manage active events",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "list",
+					Description: "List all currently active events",
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "start",
+					Description: "Start a new event (admin only)",
+					Options: []*discordgo.ApplicationCommandOption{
+						{
+							Type:        discordgo.ApplicationCommandOptionString,
+							Name:        "type",
+							Description: "Event type",
+							Required:    true,
+							Choices: []*discordgo.ApplicationCommandOptionChoice{
+								{Name: "Shiny Hunt", Value: "SHINY_HUNT"},
+								{Name: "Double XP", Value: "DOUBLE_XP"},
+								{Name: "Rare Encounter", Value: "RARE_ENCOUNTER"},
+								{Name: "Lucky Day", Value: "LUCKY_DAY"},
+								{Name: "Stat Boost", Value: "STAT_BOOST"},
+								{Name: "Evolution Festival", Value: "EVOLUTION_FEST"},
+							},
+						},
+						{
+							Type:        discordgo.ApplicationCommandOptionInteger,
+							Name:        "hours",
+							Description: "Duration in hours (default: 24)",
+							Required:    false,
+						},
+					},
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "end",
+					Description: "End an active event (admin only)",
+					Options: []*discordgo.ApplicationCommandOption{
+						{
+							Type:        discordgo.ApplicationCommandOptionString,
+							Name:        "type",
+							Description: "Event type to end",
+							Required:    true,
+							Choices: []*discordgo.ApplicationCommandOptionChoice{
+								{Name: "Shiny Hunt", Value: "SHINY_HUNT"},
+								{Name: "Double XP", Value: "DOUBLE_XP"},
+								{Name: "Rare Encounter", Value: "RARE_ENCOUNTER"},
+								{Name: "Lucky Day", Value: "LUCKY_DAY"},
+								{Name: "Stat Boost", Value: "STAT_BOOST"},
+								{Name: "Evolution Festival", Value: "EVOLUTION_FEST"},
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 
 	for _, cmd := range commands {

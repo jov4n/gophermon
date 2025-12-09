@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"image"
+	"image/color"
 	"image/draw"
 	"image/png"
 	"math/rand"
@@ -604,6 +605,118 @@ func (g *Generator) DecodeImageFromBase64(base64Str string) (image.Image, error)
 // LoadImageFromPath loads an image from a file path (for backward compatibility)
 func (g *Generator) LoadImageFromPath(path string) (image.Image, error) {
 	return g.loadImage(path)
+}
+
+// InvertColors inverts the colors of an image (for shiny gophers)
+func (g *Generator) InvertColors(img image.Image) image.Image {
+	bounds := img.Bounds()
+	result := image.NewRGBA(bounds)
+	
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			originalColor := img.At(x, y)
+			r, g, b, a := originalColor.RGBA()
+			
+			// Invert RGB values (keep alpha channel)
+			// RGBA returns values in 0-65535 range, so we need to convert
+			invertedR := uint8(255 - (r >> 8))
+			invertedG := uint8(255 - (g >> 8))
+			invertedB := uint8(255 - (b >> 8))
+			invertedA := uint8(a >> 8)
+			
+			result.Set(x, y, color.RGBA{
+				R: invertedR,
+				G: invertedG,
+				B: invertedB,
+				A: invertedA,
+			})
+		}
+	}
+	
+	return result
+}
+
+// AddShinyGlow adds a glowing effect behind a shiny gopher (optimized for performance)
+func (g *Generator) AddShinyGlow(img image.Image) image.Image {
+	bounds := img.Bounds()
+	width := bounds.Dx()
+	height := bounds.Dy()
+	
+	// Create a larger canvas to accommodate the glow
+	glowSize := 25 // Extra pixels for glow on each side
+	canvasWidth := width + glowSize*2
+	canvasHeight := height + glowSize*2
+	
+	// Create the final result with transparent background
+	result := image.NewRGBA(image.Rect(0, 0, canvasWidth, canvasHeight))
+	
+	// Fast glow: create a simple expanded outline
+	// Find edges of the gopher (where alpha > 0)
+	edgePixels := make([]struct{ x, y int }, 0)
+	
+	// Sample every 3rd pixel for speed
+	for y := bounds.Min.Y; y < bounds.Max.Y; y += 3 {
+		for x := bounds.Min.X; x < bounds.Max.X; x += 3 {
+			_, _, _, a := img.At(x, y).RGBA()
+			if a > 0 {
+				edgePixels = append(edgePixels, struct{ x, y int }{x, y})
+			}
+		}
+	}
+	
+	// Create glow by drawing expanded circles around edge pixels
+	glowColor := color.RGBA{R: 255, G: 255, B: 200, A: 150} // Golden glow
+	glowRadius := 8
+	
+	for _, pixel := range edgePixels {
+		// Draw glow circles around each edge pixel
+		for dy := -glowRadius; dy <= glowRadius; dy++ {
+			for dx := -glowRadius; dx <= glowRadius; dx++ {
+				distSq := dx*dx + dy*dy
+				if distSq <= glowRadius*glowRadius {
+					// Calculate opacity based on distance (fade out)
+					opacity := uint8(float64(glowColor.A) * (1.0 - float64(distSq)/float64(glowRadius*glowRadius)))
+					
+					glowX := glowSize + pixel.x + dx
+					glowY := glowSize + pixel.y + dy
+					
+					if glowX >= 0 && glowX < canvasWidth && glowY >= 0 && glowY < canvasHeight {
+						// Blend with existing glow - use max alpha
+						existing := result.At(glowX, glowY)
+						_, _, _, ea := existing.RGBA()
+						
+						// Use max alpha for blending
+						existingAlpha := uint8(ea >> 8)
+						newA := opacity
+						if existingAlpha > newA {
+							newA = existingAlpha
+						}
+						result.Set(glowX, glowY, color.RGBA{
+							R: glowColor.R,
+							G: glowColor.G,
+							B: glowColor.B,
+							A: newA,
+						})
+					}
+				}
+			}
+		}
+	}
+	
+	// Draw the original inverted image on top
+	originalX := glowSize
+	originalY := glowSize
+	draw.Draw(result, image.Rect(originalX, originalY, originalX+width, originalY+height),
+		img, bounds.Min, draw.Over)
+	
+	return result
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // complexityToRarity converts complexity score to rarity string

@@ -1,6 +1,7 @@
 package game
 
 import (
+	"encoding/json"
 	"fmt"
 	"image"
 	"math/rand"
@@ -17,6 +18,7 @@ type Service struct {
 	battleRepo       *storage.BattleRepo
 	generator        *gopherkon.Generator
 	evolutionService *EvolutionService
+	eventManager     *EventManager
 	assetsPath       string
 }
 
@@ -36,8 +38,14 @@ func NewService(
 		battleRepo:       battleRepo,
 		generator:        generator,
 		evolutionService: evolutionService,
+		eventManager:     NewEventManager(),
 		assetsPath:       assetsPath,
 	}
+}
+
+// GetEventManager returns the event manager
+func (s *Service) GetEventManager() *EventManager {
+	return s.eventManager
 }
 
 // GenerateStarterGophers creates 3 starter gophers for a new trainer
@@ -48,29 +56,48 @@ func (s *Service) GenerateStarterGophers() ([]*storage.Gopher, error) {
 	for i := 0; i < 3; i++ {
 		// Random archetype
 		archetype := archetypes[rand.Intn(len(archetypes))]
-		
+
 		// Complexity 2-3 for starters (COMMON/UNCOMMON)
 		complexity := 2 + rand.Intn(2)
 		rarity := ComplexityToRarity(complexity).String()
+
+		// Check for shiny (rate affected by events)
+		shinyRate := s.eventManager.GetShinyRate()
+		isShiny := rand.Float64() < shinyRate
 
 		// Generate sprite
 		result, err := s.generator.Generate(gopherkon.GenerateOptions{
 			Complexity:   complexity,
 			TargetRarity: rarity,
-			Seed:        time.Now().UnixNano() + int64(i),
+			Seed:         time.Now().UnixNano() + int64(i),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate sprite: %w", err)
 		}
 
+		// Invert colors and add glow if shiny
+		spriteImage := result.Image
+		if isShiny {
+			spriteImage = s.generator.InvertColors(spriteImage)
+			spriteImage = s.generator.AddShinyGlow(spriteImage)
+		}
+
 		// Encode sprite to base64
-		spriteData, err := s.generator.EncodeImageToBase64(result.Image)
+		spriteData, err := s.generator.EncodeImageToBase64(spriteImage)
 		if err != nil {
 			return nil, fmt.Errorf("failed to encode sprite: %w", err)
 		}
 
 		// Generate stats
 		hp, attack, defense, speed := GenerateBaseStats(archetype, rarity, 1)
+
+		// Apply 25% stat boost for shiny gophers
+		if isShiny {
+			hp = int(float64(hp) * 1.25)
+			attack = int(float64(attack) * 1.25)
+			defense = int(float64(defense) * 1.25)
+			speed = int(float64(speed) * 1.25)
+		}
 
 		// Assign types: primary type from archetype, chance for secondary type
 		primaryType := GetTypeFromArchetype(archetype)
@@ -99,6 +126,7 @@ func (s *Service) GenerateStarterGophers() ([]*storage.Gopher, error) {
 			SpritePath:       "", // No longer used
 			SpriteData:       spriteData,
 			GopherkonLayers:  result.Layers,
+			Shiny:            isShiny,
 			IsInParty:        false,
 		}
 
@@ -171,7 +199,7 @@ func (s *Service) GenerateBattleCard(enemyGopher, playerGopher *storage.Gopher) 
 
 	// Generate card and return base64 with names and levels
 	cardBase64, err := s.generator.GenerateBattleCardFromImagesToBase64(
-		enemyImg, playerImg, 
+		enemyImg, playerImg,
 		enemyGopher.Name, playerGopher.Name,
 		enemyGopher.Level, playerGopher.Level,
 	)
@@ -197,12 +225,18 @@ func (s *Service) GenerateGopherCard(gophers []*storage.Gopher, cols int) (strin
 			img, err = s.generator.DecodeImageFromBase64(gopher.SpriteData)
 		} else if gopher.SpritePath != "" {
 			img, err = s.generator.LoadImageFromPath(gopher.SpritePath)
+			// If loaded from path and gopher is shiny, invert it
+			if err == nil && gopher.Shiny {
+				img = s.generator.InvertColors(img)
+			}
 		} else {
 			return "", fmt.Errorf("gopher %d has no sprite data", i+1)
 		}
 		if err != nil {
 			return "", fmt.Errorf("failed to load gopher %d sprite: %w", i+1, err)
 		}
+		// Note: If gopher.Shiny is true and SpriteData was used, the image should already be inverted
+		// from when it was generated. We don't double-invert here.
 		spriteImages[i] = img
 	}
 
@@ -217,6 +251,11 @@ func (s *Service) GenerateGopherCard(gophers []*storage.Gopher, cols int) (strin
 
 // GenerateGopherWithRarity creates a gopher with a specific rarity
 func (s *Service) GenerateGopherWithRarity(targetRarity Rarity, seedOffset int64) (*storage.Gopher, error) {
+	return s.GenerateGopherWithRarityAndShiny(targetRarity, seedOffset, false)
+}
+
+// GenerateGopherWithRarityAndShiny creates a gopher with a specific rarity and shiny status
+func (s *Service) GenerateGopherWithRarityAndShiny(targetRarity Rarity, seedOffset int64, forceShiny bool) (*storage.Gopher, error) {
 	// Random archetype
 	archetypes := []Archetype{ArchetypeHacker, ArchetypeTank, ArchetypeSpeedy, ArchetypeSupport, ArchetypeMage}
 	archetype := archetypes[rand.Intn(len(archetypes))]
@@ -224,61 +263,99 @@ func (s *Service) GenerateGopherWithRarity(targetRarity Rarity, seedOffset int64
 	// Random level (1-10 for now)
 	level := 1 + rand.Intn(10)
 
+	// Check for shiny (rate affected by events) or force shiny
+	shinyRate := s.eventManager.GetShinyRate()
+	isShiny := forceShiny || rand.Float64() < shinyRate
+
 	// Generate sprite with specific rarity
 	result, err := s.generator.Generate(gopherkon.GenerateOptions{
 		TargetRarity: targetRarity.String(),
-		Seed:        time.Now().UnixNano() + seedOffset,
+		Seed:         time.Now().UnixNano() + seedOffset,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate sprite: %w", err)
 	}
 
+	// Invert colors and add glow if shiny
+	spriteImage := result.Image
+	if isShiny {
+		spriteImage = s.generator.InvertColors(spriteImage)
+		spriteImage = s.generator.AddShinyGlow(spriteImage)
+	}
+
 	// Encode sprite to base64
-	spriteData, err := s.generator.EncodeImageToBase64(result.Image)
+	spriteData, err := s.generator.EncodeImageToBase64(spriteImage)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode sprite: %w", err)
 	}
 
-		// Generate stats
-		hp, attack, defense, speed := GenerateBaseStats(archetype, targetRarity.String(), level)
+	// Generate stats
+	hp, attack, defense, speed := GenerateBaseStats(archetype, targetRarity.String(), level)
 
-		// Assign types: primary type from archetype, chance for secondary type
-		primaryType := GetTypeFromArchetype(archetype)
-		secondaryType := ""
-		// 30% chance for dual type (rarer gophers more likely)
-		if rand.Float64() < 0.3 || targetRarity == RarityRare || targetRarity == RarityEpic || targetRarity == RarityLegendary {
-			secondaryType = string(GetRandomSecondaryType(primaryType))
-		}
+	// Apply 25% stat boost for shiny gophers
+	if isShiny {
+		hp = int(float64(hp) * 1.25)
+		attack = int(float64(attack) * 1.25)
+		defense = int(float64(defense) * 1.25)
+		speed = int(float64(speed) * 1.25)
+	}
 
-		// Create gopher
-		gopher := &storage.Gopher{
-			Name:             GenerateGopherName(archetype),
-			Level:            level,
-			XP:               0,
-			CurrentHP:        hp,
-			MaxHP:            hp,
-			Attack:           attack,
-			Defense:          defense,
-			Speed:            speed,
-			Rarity:           targetRarity.String(),
-			ComplexityScore:  result.Complexity,
-			SpeciesArchetype: string(archetype),
-			EvolutionStage:   0,
-			PrimaryType:      string(primaryType),
-			SecondaryType:    secondaryType,
-			SpritePath:       "", // No longer used
-			SpriteData:       spriteData,
-			GopherkonLayers:  result.Layers,
-			IsInParty:        false,
-		}
+	// Assign types: primary type from archetype, chance for secondary type
+	primaryType := GetTypeFromArchetype(archetype)
+	secondaryType := ""
+	// 30% chance for dual type (rarer gophers more likely)
+	if rand.Float64() < 0.3 || targetRarity == RarityRare || targetRarity == RarityEpic || targetRarity == RarityLegendary {
+		secondaryType = string(GetRandomSecondaryType(primaryType))
+	}
+
+	// Create gopher
+	gopher := &storage.Gopher{
+		Name:             GenerateGopherName(archetype),
+		Level:            level,
+		XP:               0,
+		CurrentHP:        hp,
+		MaxHP:            hp,
+		Attack:           attack,
+		Defense:          defense,
+		Speed:            speed,
+		Rarity:           targetRarity.String(),
+		ComplexityScore:  result.Complexity,
+		SpeciesArchetype: string(archetype),
+		EvolutionStage:   0,
+		PrimaryType:      string(primaryType),
+		SecondaryType:    secondaryType,
+		SpritePath:       "", // No longer used
+		SpriteData:       spriteData,
+		GopherkonLayers:  result.Layers,
+		Shiny:            isShiny,
+		IsInParty:        false,
+	}
 
 	return gopher, nil
 }
 
 // GenerateWildGopher creates a wild gopher for encounters
 func (s *Service) GenerateWildGopher() (*storage.Gopher, error) {
-	// Determine rarity from distribution
-	rarity := GetWildRarityDistribution(rand.Float64())
+	// Determine rarity from distribution (affected by events)
+	randFloat := rand.Float64()
+
+	// Apply rarity boost from events (e.g., Rare Encounter event)
+	rarityBoost := s.eventManager.GetRarityBoost()
+	if rarityBoost > 1.0 {
+		// Shift distribution towards rarer gophers
+		// Transform: compress lower values (COMMON range) and expand higher values (rare range)
+		// This formula shifts the distribution upward, reducing COMMON chance and increasing rare chance
+		randFloat = 1.0 - (1.0-randFloat)/rarityBoost
+		// Clamp to [0.0, 1.0] range in case of floating point precision issues
+		if randFloat < 0.0 {
+			randFloat = 0.0
+		}
+		if randFloat > 1.0 {
+			randFloat = 1.0
+		}
+	}
+
+	rarity := GetWildRarityDistribution(randFloat)
 	return s.GenerateGopherWithRarity(rarity, 0)
 }
 
@@ -292,7 +369,7 @@ func (s *Service) CreateGopherWithAbilities(gopher *storage.Gopher) error {
 
 	// Get ability templates for archetype
 	abilityTemplates := GetAbilitiesForArchetype(Archetype(gopher.SpeciesArchetype), gopher.EvolutionStage, gopher.Rarity)
-	
+
 	// Assign first 2 abilities (more unlock at higher levels)
 	numAbilities := 2
 	if gopher.Level >= 10 {
@@ -322,9 +399,18 @@ func (s *Service) StorageGopherToGameGopher(storageGopher *storage.Gopher) (*Gop
 	}
 	secondaryType := GopherType(storageGopher.SecondaryType)
 
+	// Deserialize status effects from JSON
+	statusEffects := []*StatusEffect{}
+	if storageGopher.StatusEffects != "" && storageGopher.StatusEffects != "[]" {
+		if err := json.Unmarshal([]byte(storageGopher.StatusEffects), &statusEffects); err != nil {
+			// If unmarshaling fails, just use empty slice
+			statusEffects = []*StatusEffect{}
+		}
+	}
+
 	gameGopher := &Gopher{
 		ID:               storageGopher.ID,
-		TrainerID:       storageGopher.TrainerID,
+		TrainerID:        storageGopher.TrainerID,
 		Name:             storageGopher.Name,
 		Level:            storageGopher.Level,
 		XP:               storageGopher.XP,
@@ -345,7 +431,8 @@ func (s *Service) StorageGopherToGameGopher(storageGopher *storage.Gopher) (*Gop
 		IsInParty:        storageGopher.IsInParty,
 		PCSlot:           storageGopher.PCSlot,
 		Abilities:        []*Ability{},
-		StatusEffects:    []*StatusEffect{},
+		StatusEffects:    statusEffects,
+		Shiny:            storageGopher.Shiny,
 		BaseAttack:       storageGopher.Attack,
 		BaseDefense:      storageGopher.Defense,
 		BaseSpeed:        storageGopher.Speed,
@@ -423,4 +510,3 @@ func (s *Service) CheckAndHandleBlackout(trainerID string) (blackedOut bool, mes
 
 	return true, message
 }
-

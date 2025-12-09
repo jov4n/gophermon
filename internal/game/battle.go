@@ -20,12 +20,47 @@ type BattleState struct {
 	TurnOwner         string      // "PLAYER" or "ENEMY"
 	State             string      // "ACTIVE", "WON", "LOST", "ESCAPED"
 	Log               []string
+	EventManager      *EventManager // Event manager for event bonuses
 }
 
 // NewBattleState creates a new battle state
-func NewBattleState(trainerID, channelID string, playerGopher, enemyGopher *Gopher, playerParty []*Gopher) *BattleState {
+func NewBattleState(trainerID, channelID string, playerGopher, enemyGopher *Gopher, playerParty []*Gopher, eventManager *EventManager) *BattleState {
 	// Initialize participating gophers with the active gopher
 	participating := []*Gopher{playerGopher}
+	
+	// Apply stat boost event to all gophers in battle
+	if eventManager != nil {
+		statBoost := eventManager.GetStatBoostMultiplier()
+		if statBoost > 1.0 {
+			// Ensure base stats are initialized, then apply boost
+			applyStatBoost := func(gopher *Gopher) {
+				// Initialize base stats if needed
+				if gopher.BaseAttack == 0 {
+					gopher.BaseAttack = gopher.Attack
+				}
+				if gopher.BaseDefense == 0 {
+					gopher.BaseDefense = gopher.Defense
+				}
+				if gopher.BaseSpeed == 0 {
+					gopher.BaseSpeed = gopher.Speed
+				}
+				// Recalculate stats first (applies status effects)
+				gopher.RecalculateStats()
+				// Then apply event stat boost on top (multiply current stats)
+				gopher.Attack = int(float64(gopher.Attack) * statBoost)
+				gopher.Defense = int(float64(gopher.Defense) * statBoost)
+				gopher.Speed = int(float64(gopher.Speed) * statBoost)
+			}
+			
+			applyStatBoost(playerGopher)
+			applyStatBoost(enemyGopher)
+			for _, gopher := range playerParty {
+				if gopher.ID != playerGopher.ID {
+					applyStatBoost(gopher)
+				}
+			}
+		}
+	}
 	
 	return &BattleState{
 		TrainerID:          trainerID,
@@ -37,6 +72,7 @@ func NewBattleState(trainerID, channelID string, playerGopher, enemyGopher *Goph
 		TurnOwner:          "PLAYER",
 		State:              "ACTIVE",
 		Log:                []string{fmt.Sprintf("A wild %s appeared!", enemyGopher.Name)},
+		EventManager:       eventManager,
 	}
 }
 
@@ -141,15 +177,13 @@ func (bs *BattleState) PlayerAction(action string, abilityIndex int) ([]string, 
 			bs.State = "WON"
 			xpGain := bs.calculateXPGain()
 			
-			// Give XP to all participating gophers
+			// Give XP to all participating gophers (including fainted ones)
 			for _, gopher := range bs.ParticipatingGophers {
-				if gopher.CurrentHP > 0 { // Only alive gophers get XP
-					leveledUp, newLevel := gopher.AddXP(xpGain)
-					xpBar := GetXPBar(gopher.XP, gopher.Level, 10)
-					messages = append(messages, fmt.Sprintf("%s gained %d XP! %s", gopher.Name, xpGain, xpBar))
-					if leveledUp {
-						messages = append(messages, fmt.Sprintf("%s leveled up to level %d! 🎉", gopher.Name, newLevel))
-					}
+				leveledUp, newLevel := gopher.AddXP(xpGain)
+				xpBar := GetXPBar(gopher.XP, gopher.Level, 10)
+				messages = append(messages, fmt.Sprintf("%s gained %d XP! %s", gopher.Name, xpGain, xpBar))
+				if leveledUp {
+					messages = append(messages, fmt.Sprintf("%s leveled up to level %d! 🎉", gopher.Name, newLevel))
 				}
 			}
 			
@@ -162,9 +196,14 @@ func (bs *BattleState) PlayerAction(action string, abilityIndex int) ([]string, 
 		enemyMsgs := bs.enemyTurn()
 		messages = append(messages, enemyMsgs...)
 
+		// Check if player gopher fainted and try auto-swap
 		if bs.PlayerGopher.CurrentHP <= 0 {
-			bs.State = "LOST"
-			messages = append(messages, fmt.Sprintf("%s was defeated!", bs.PlayerGopher.Name))
+			swapped, swapMsgs := bs.tryAutoSwap()
+			messages = append(messages, swapMsgs...)
+			if !swapped {
+				// Battle lost if no swap occurred
+				bs.State = "LOST"
+			}
 		}
 
 	case "swap":
@@ -230,15 +269,13 @@ func (bs *BattleState) PlayerAction(action string, abilityIndex int) ([]string, 
 			bs.State = "WON"
 			xpGain := bs.calculateXPGain()
 			
-			// Give XP to all participating gophers on capture
+			// Give XP to all participating gophers on capture (including fainted ones)
 			for _, gopher := range bs.ParticipatingGophers {
-				if gopher.CurrentHP > 0 {
-					leveledUp, newLevel := gopher.AddXP(xpGain)
-					xpBar := GetXPBar(gopher.XP, gopher.Level, 10)
-					messages = append(messages, fmt.Sprintf("%s gained %d XP! %s", gopher.Name, xpGain, xpBar))
-					if leveledUp {
-						messages = append(messages, fmt.Sprintf("%s leveled up to level %d! 🎉", gopher.Name, newLevel))
-					}
+				leveledUp, newLevel := gopher.AddXP(xpGain)
+				xpBar := GetXPBar(gopher.XP, gopher.Level, 10)
+				messages = append(messages, fmt.Sprintf("%s gained %d XP! %s", gopher.Name, xpGain, xpBar))
+				if leveledUp {
+					messages = append(messages, fmt.Sprintf("%s leveled up to level %d! 🎉", gopher.Name, newLevel))
 				}
 			}
 			
@@ -249,6 +286,16 @@ func (bs *BattleState) PlayerAction(action string, abilityIndex int) ([]string, 
 			bs.TurnOwner = "ENEMY"
 			enemyMsgs := bs.enemyTurn()
 			messages = append(messages, enemyMsgs...)
+			
+			// Check if player gopher fainted after enemy turn and try auto-swap
+			if bs.PlayerGopher.CurrentHP <= 0 {
+				swapped, swapMsgs := bs.tryAutoSwap()
+				messages = append(messages, swapMsgs...)
+				if !swapped {
+					// Battle lost if no swap occurred
+					bs.State = "LOST"
+				}
+			}
 		}
 
 	default:
@@ -257,6 +304,52 @@ func (bs *BattleState) PlayerAction(action string, abilityIndex int) ([]string, 
 
 	bs.Log = append(bs.Log, messages...)
 	return messages, nil
+}
+
+// tryAutoSwap attempts to swap to another party member if current gopher fainted
+// Returns true if swap occurred, false otherwise
+func (bs *BattleState) tryAutoSwap() (swapped bool, messages []string) {
+	if bs.PlayerGopher.CurrentHP > 0 {
+		return false, nil
+	}
+	
+	messages = append(messages, fmt.Sprintf("%s was defeated!", bs.PlayerGopher.Name))
+	
+	// Find next available gopher
+	var nextGopher *Gopher
+	for _, gopher := range bs.PlayerParty {
+		if gopher.ID != bs.PlayerGopher.ID && gopher.CurrentHP > 0 {
+			nextGopher = gopher
+			break
+		}
+	}
+	
+	if nextGopher != nil {
+		// Swap to next available gopher
+		oldGopher := bs.PlayerGopher
+		bs.PlayerGopher = nextGopher
+		
+		// Add new gopher to participating list if not already there
+		found := false
+		for _, g := range bs.ParticipatingGophers {
+			if g.ID == nextGopher.ID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			bs.ParticipatingGophers = append(bs.ParticipatingGophers, nextGopher)
+		}
+		
+		messages = append(messages, fmt.Sprintf("%s, come back!", oldGopher.Name))
+		messages = append(messages, fmt.Sprintf("Go, %s!", nextGopher.Name))
+		bs.TurnOwner = "PLAYER" // Player gets to act with new gopher
+		return true, messages
+	} else {
+		// No more gophers available - battle lost
+		bs.State = "LOST"
+		return false, messages
+	}
 }
 
 // enemyTurn executes the enemy's turn
@@ -350,7 +443,13 @@ func (bs *BattleState) calculateXPGain() int {
 		rarityMultiplier = 3.0
 	}
 	
-	return int(float64(baseXP) * rarityMultiplier)
+	// Apply event multiplier (e.g., Double XP event)
+	eventMultiplier := 1.0
+	if bs.EventManager != nil {
+		eventMultiplier = bs.EventManager.GetXPMultiplier()
+	}
+	
+	return int(float64(baseXP) * rarityMultiplier * eventMultiplier)
 }
 
 // calculateCaptureChance calculates the chance to capture a gopher
@@ -375,6 +474,11 @@ func (bs *BattleState) calculateCaptureChance() float64 {
 	}
 	
 	chance := baseChance * (1.0 - rarityPenalty)
+	
+	// Apply event multiplier (e.g., Lucky Day event)
+	if bs.EventManager != nil {
+		chance *= bs.EventManager.GetCaptureRateMultiplier()
+	}
 	
 	// Minimum 5% chance, maximum 90% chance
 	if chance < 0.05 {
@@ -407,9 +511,17 @@ func GetHPBar(current, max int, length int) string {
 
 // GetXPBar creates a visual XP bar showing progress to next level
 func GetXPBar(currentXP, currentLevel int, length int) string {
+	// Ensure XP is never negative
+	if currentXP < 0 {
+		currentXP = 0
+	}
+	if currentLevel < 1 {
+		currentLevel = 1
+	}
+	
 	// XPNeeded returns total cumulative XP to reach a level
 	// For level 1: 50, level 2: 200, level 3: 450, level 4: 800, etc.
-	// However, gophers are created at any level with 0 XP, not the XP required for that level
+	// Gophers are created at any level with 0 XP, not the XP required for that level
 	// The AddXP function checks: g.XP >= XPNeeded(g.Level+1) to level up
 	// Examples:
 	//   - Level 1 gopher with 0 XP needs 200 XP (XPNeeded(2)) total to reach level 2
@@ -418,29 +530,20 @@ func GetXPBar(currentXP, currentLevel int, length int) string {
 	// Calculate XP needed from current level to next level
 	xpForNextLevel := XPNeeded(currentLevel + 1)
 	xpForCurrentLevel := XPNeeded(currentLevel)
-	
-	// If gopher has less XP than required for their current level, treat them as having 0 progress
-	// This handles the case where gophers are created at a level with 0 XP
-	// (e.g., level 1 with 0 XP when XPNeeded(1) = 50, or level 3 with 0 XP when XPNeeded(3) = 450)
-	effectiveXP := currentXP
-	if effectiveXP < xpForCurrentLevel {
-		effectiveXP = 0
-	}
-	
-	// Calculate progress: how much XP beyond the current level requirement
-	xpProgress := effectiveXP - xpForCurrentLevel
 	xpNeededForNextLevel := xpForNextLevel - xpForCurrentLevel
-	
-	// Clamp to valid range (can't be negative, can't exceed needed)
-	if xpProgress < 0 {
-		xpProgress = 0
-	}
-	if xpProgress > xpNeededForNextLevel {
-		xpProgress = xpNeededForNextLevel
-	}
 	
 	if xpNeededForNextLevel <= 0 {
 		return strings.Repeat("█", length) + " MAX"
+	}
+	
+	// Calculate progress: how much XP the gopher has towards the next level
+	// Since gophers start at level N with 0 XP and need xpNeededForNextLevel XP to reach level N+1,
+	// we use currentXP directly as progress (clamped to valid range)
+	// For example: Level 1 gopher with 48 XP needs 150 XP (200-50) to reach level 2, so progress is 48/150
+	xpProgress := currentXP
+	if xpProgress > xpNeededForNextLevel {
+		// Gopher has more XP than needed (should have leveled up, but handle edge case)
+		xpProgress = xpNeededForNextLevel
 	}
 	
 	filled := int(float64(xpProgress) / float64(xpNeededForNextLevel) * float64(length))

@@ -12,25 +12,47 @@ import (
 type EvolutionService struct {
 	generator *gopherkon.Generator
 	assetsPath string
+	eventManager *EventManager
 }
 
 func NewEvolutionService(generator *gopherkon.Generator, assetsPath string) *EvolutionService {
 	return &EvolutionService{
 		generator:  generator,
 		assetsPath: assetsPath,
+		eventManager: nil, // Will be set by service
 	}
+}
+
+// SetEventManager sets the event manager for evolution level reduction
+func (es *EvolutionService) SetEventManager(em *EventManager) {
+	es.eventManager = em
 }
 
 // CheckEvolution checks if a gopher should evolve and performs evolution
 func (es *EvolutionService) EvolveGopher(gopher *Gopher) (*Gopher, error) {
-	// Evolution thresholds: level 16 and 32
+	// Evolution thresholds: level 16 and 32 (reduced by events)
+	levelReduction := 0
+	if es.eventManager != nil {
+		levelReduction = es.eventManager.GetEvolutionLevelReduction()
+	}
+	
+	threshold1 := 16 - levelReduction
+	threshold2 := 32 - levelReduction
+	
+	if threshold1 < 1 {
+		threshold1 = 1
+	}
+	if threshold2 < threshold1+1 {
+		threshold2 = threshold1 + 1
+	}
+	
 	shouldEvolve := false
 	newStage := gopher.EvolutionStage
 
-	if gopher.Level >= 16 && gopher.EvolutionStage == 0 {
+	if gopher.Level >= threshold1 && gopher.EvolutionStage == 0 {
 		shouldEvolve = true
 		newStage = 1
-	} else if gopher.Level >= 32 && gopher.EvolutionStage == 1 {
+	} else if gopher.Level >= threshold2 && gopher.EvolutionStage == 1 {
 		shouldEvolve = true
 		newStage = 2
 	}
