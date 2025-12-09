@@ -14,6 +14,7 @@ type Trainer struct {
 	Name            string
 	CreatedAt       time.Time
 	ActivePartySlots int
+	Currency        int
 }
 
 type TrainerRepo struct {
@@ -39,7 +40,7 @@ func (r *TrainerRepo) Create(discordID, name string) (*Trainer, error) {
 }
 
 func (r *TrainerRepo) GetByDiscordID(discordID string) (*Trainer, error) {
-	query := `SELECT id, discord_id, name, created_at, active_party_slots 
+	query := `SELECT id, discord_id, name, created_at, active_party_slots, COALESCE(currency, 100) 
 	          FROM trainers WHERE discord_id = ?`
 	
 	var trainer Trainer
@@ -51,6 +52,7 @@ func (r *TrainerRepo) GetByDiscordID(discordID string) (*Trainer, error) {
 		&trainer.Name,
 		&createdAt,
 		&trainer.ActivePartySlots,
+		&trainer.Currency,
 	)
 	
 	if err == sql.ErrNoRows {
@@ -65,7 +67,7 @@ func (r *TrainerRepo) GetByDiscordID(discordID string) (*Trainer, error) {
 }
 
 func (r *TrainerRepo) GetByID(id string) (*Trainer, error) {
-	query := `SELECT id, discord_id, name, created_at, active_party_slots 
+	query := `SELECT id, discord_id, name, created_at, active_party_slots, COALESCE(currency, 100) 
 	          FROM trainers WHERE id = ?`
 	
 	var trainer Trainer
@@ -77,6 +79,7 @@ func (r *TrainerRepo) GetByID(id string) (*Trainer, error) {
 		&trainer.Name,
 		&createdAt,
 		&trainer.ActivePartySlots,
+		&trainer.Currency,
 	)
 	
 	if err == sql.ErrNoRows {
@@ -94,5 +97,36 @@ func (r *TrainerRepo) UpdatePartySlots(trainerID string, count int) error {
 	query := `UPDATE trainers SET active_party_slots = ? WHERE id = ?`
 	_, err := r.db.Conn().Exec(query, count, trainerID)
 	return err
+}
+
+func (r *TrainerRepo) AddCurrency(trainerID string, amount int) error {
+	query := `UPDATE trainers SET currency = COALESCE(currency, 100) + ? WHERE id = ?`
+	_, err := r.db.Conn().Exec(query, amount, trainerID)
+	return err
+}
+
+func (r *TrainerRepo) RemoveCurrency(trainerID string, amount int) error {
+	query := `UPDATE trainers SET currency = COALESCE(currency, 100) - ? WHERE id = ? AND COALESCE(currency, 100) >= ?`
+	result, err := r.db.Conn().Exec(query, amount, trainerID, amount)
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("insufficient currency")
+	}
+	return nil
+}
+
+func (r *TrainerRepo) GetCurrency(trainerID string) (int, error) {
+	var currency int
+	err := r.db.Conn().QueryRow(
+		"SELECT COALESCE(currency, 100) FROM trainers WHERE id = ?",
+		trainerID,
+	).Scan(&currency)
+	return currency, err
 }
 

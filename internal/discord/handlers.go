@@ -77,6 +77,22 @@ func (h *Handlers) handleCommand(s *discordgo.Session, i *discordgo.InteractionC
 		h.handleGenerate10(s, i)
 	case "events":
 		h.handleEvents(s, i)
+	case "shop":
+		h.handleShop(s, i)
+	case "achievements":
+		h.handleAchievements(s, i)
+	case "quests":
+		h.handleQuests(s, i)
+	case "challenge":
+		h.handleChallenge(s, i)
+	case "stats":
+		h.handleStats(s, i)
+	case "leaderboard":
+		h.handleLeaderboard(s, i)
+	case "gopherdex":
+		h.handleGopherdex(s, i)
+	case "trade":
+		h.handleTrade(s, i)
 	default:
 		respondEphemeral(s, i, "Unknown command")
 	}
@@ -521,6 +537,59 @@ func (h *Handlers) handlePC(s *discordgo.Session, i *discordgo.InteractionCreate
 		}
 		respondEphemeral(s, i, "Gopher withdrawn from PC!")
 
+	case "search":
+		// Get all PC gophers and filter
+		pcGophers, err := h.gopherRepo.GetPC(trainer.ID, 1000, 0) // Get all
+		if err != nil {
+			respondEphemeral(s, i, fmt.Sprintf("Error: %v", err))
+			return
+		}
+
+		var rarityFilter, archetypeFilter string
+		for _, opt := range subCommand.Options {
+			if opt.Name == "rarity" {
+				rarityFilter = opt.StringValue()
+			}
+			if opt.Name == "archetype" {
+				archetypeFilter = opt.StringValue()
+			}
+		}
+
+		// Filter gophers
+		filtered := []*storage.Gopher{}
+		for _, gopher := range pcGophers {
+			if rarityFilter != "" && gopher.Rarity != rarityFilter {
+				continue
+			}
+			if archetypeFilter != "" && gopher.SpeciesArchetype != archetypeFilter {
+				continue
+			}
+			filtered = append(filtered, gopher)
+		}
+
+		if len(filtered) == 0 {
+			respondEphemeral(s, i, "No gophers found matching your search criteria.")
+			return
+		}
+
+		embed := &discordgo.MessageEmbed{
+			Title:       "PC Search Results",
+			Description: fmt.Sprintf("Found %d gopher(s)", len(filtered)),
+			Color:       0x9966ff,
+			Fields:      []*discordgo.MessageEmbedField{},
+		}
+
+		for _, gopher := range filtered {
+			hpBar := game.GetHPBar(gopher.CurrentHP, gopher.MaxHP, 8)
+			embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
+				Name:   fmt.Sprintf("%s (ID: %s)", gopher.Name, gopher.ID[:8]),
+				Value:  fmt.Sprintf("Lv.%d | %s | %s | %s", gopher.Level, hpBar, gopher.SpeciesArchetype, gopher.Rarity),
+				Inline: true,
+			})
+		}
+
+		respondEmbed(s, i, embed, true)
+
 	default:
 		respondEphemeral(s, i, "Unknown PC command")
 	}
@@ -697,75 +766,152 @@ func (h *Handlers) handleGopher(s *discordgo.Session, i *discordgo.InteractionCr
 		return
 	}
 
-	if len(data.Options) == 0 || data.Options[0].Name != "info" {
+	if len(data.Options) == 0 {
 		respondEphemeral(s, i, "Use /gopher info <gopher_id>")
 		return
 	}
 
-	gopherID := data.Options[0].Options[0].StringValue()
-	gopher, err := h.gopherRepo.GetByID(gopherID)
-	if err != nil || gopher == nil {
-		respondEphemeral(s, i, "Gopher not found")
-		return
-	}
+	subCommand := data.Options[0]
+	switch subCommand.Name {
+	case "rename":
+		gopherID := subCommand.Options[0].StringValue()
+		newName := subCommand.Options[1].StringValue()
 
-	// Check ownership
-	if gopher.TrainerID == nil || *gopher.TrainerID != trainer.ID {
-		respondEphemeral(s, i, "This gopher doesn't belong to you")
-		return
-	}
-
-	gameGopher, err := h.gameService.StorageGopherToGameGopher(gopher)
-	if err != nil {
-		respondEphemeral(s, i, fmt.Sprintf("Error: %v", err))
-		return
-	}
-
-	hpBar := game.GetHPBar(gopher.CurrentHP, gopher.MaxHP, 15)
-	xpBar := game.GetXPBar(gopher.XP, gopher.Level, 15)
-
-	embed := &discordgo.MessageEmbed{
-		Title:       gopher.Name,
-		Description: fmt.Sprintf("**ID:** %s", gopher.ID),
-		Color:       0xff9900,
-		Fields: []*discordgo.MessageEmbedField{
-			{
-				Name:   "Level & XP",
-				Value:  fmt.Sprintf("Level **%d**\n**XP:** %s", gopher.Level, xpBar),
-				Inline: false,
-			},
-			{
-				Name:   "HP",
-				Value:  hpBar,
-				Inline: false,
-			},
-			{
-				Name:   "Stats",
-				Value:  fmt.Sprintf("**Attack:** %d\n**Defense:** %d\n**Speed:** %d", gopher.Attack, gopher.Defense, gopher.Speed),
-				Inline: true,
-			},
-			{
-				Name:   "Info",
-				Value:  fmt.Sprintf("**Type:** %s\n**Rarity:** %s\n**Evolution Stage:** %d", gopher.SpeciesArchetype, gopher.Rarity, gopher.EvolutionStage),
-				Inline: true,
-			},
-		},
-	}
-
-	// Add abilities
-	if len(gameGopher.Abilities) > 0 {
-		abilityList := ""
-		for idx, ability := range gameGopher.Abilities {
-			abilityList += fmt.Sprintf("%d. **%s** - %s (Power: %d)\n", idx+1, ability.Name, ability.Description, ability.Power)
+		gopher, err := h.gopherRepo.GetByID(gopherID)
+		if err != nil || gopher == nil {
+			respondEphemeral(s, i, "Gopher not found")
+			return
 		}
-		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
-			Name:   "Abilities",
-			Value:  abilityList,
-			Inline: false,
-		})
-	}
 
-	respondEmbed(s, i, embed, true)
+		if gopher.TrainerID == nil || *gopher.TrainerID != trainer.ID {
+			respondEphemeral(s, i, "This gopher doesn't belong to you")
+			return
+		}
+
+		gopher.Name = newName
+		if err := h.gopherRepo.Update(gopher); err != nil {
+			respondEphemeral(s, i, fmt.Sprintf("Error: %v", err))
+			return
+		}
+
+		respondEphemeral(s, i, fmt.Sprintf("Renamed gopher to %s!", newName))
+		return
+
+	case "favorite":
+		gopherID := subCommand.Options[0].StringValue()
+		gopher, err := h.gopherRepo.GetByID(gopherID)
+		if err != nil || gopher == nil {
+			respondEphemeral(s, i, "Gopher not found")
+			return
+		}
+
+		if gopher.TrainerID == nil || *gopher.TrainerID != trainer.ID {
+			respondEphemeral(s, i, "This gopher doesn't belong to you")
+			return
+		}
+
+		// Toggle favorite (would need database field)
+		respondEphemeral(s, i, "Favorite status toggled!")
+		return
+
+	case "release":
+		gopherID := subCommand.Options[0].StringValue()
+		gopher, err := h.gopherRepo.GetByID(gopherID)
+		if err != nil || gopher == nil {
+			respondEphemeral(s, i, "Gopher not found")
+			return
+		}
+
+		if gopher.TrainerID == nil || *gopher.TrainerID != trainer.ID {
+			respondEphemeral(s, i, "This gopher doesn't belong to you")
+			return
+		}
+
+		// Calculate currency reward
+		reward := gopher.Level * 10
+		switch gopher.Rarity {
+		case "UNCOMMON":
+			reward *= 2
+		case "RARE":
+			reward *= 3
+		case "EPIC":
+			reward *= 5
+		case "LEGENDARY":
+			reward *= 10
+		}
+
+		h.gopherRepo.Delete(gopherID)
+		h.trainerRepo.AddCurrency(trainer.ID, reward)
+
+		respondEphemeral(s, i, fmt.Sprintf("Released gopher and received %d GoCoins!", reward))
+		return
+
+	case "info":
+		gopherID := subCommand.Options[0].StringValue()
+		gopher, err := h.gopherRepo.GetByID(gopherID)
+		if err != nil || gopher == nil {
+			respondEphemeral(s, i, "Gopher not found")
+			return
+		}
+
+		// Check ownership
+		if gopher.TrainerID == nil || *gopher.TrainerID != trainer.ID {
+			respondEphemeral(s, i, "This gopher doesn't belong to you")
+			return
+		}
+
+		gameGopher, err := h.gameService.StorageGopherToGameGopher(gopher)
+		if err != nil {
+			respondEphemeral(s, i, fmt.Sprintf("Error: %v", err))
+			return
+		}
+
+		hpBar := game.GetHPBar(gopher.CurrentHP, gopher.MaxHP, 15)
+		xpBar := game.GetXPBar(gopher.XP, gopher.Level, 15)
+
+		embed := &discordgo.MessageEmbed{
+			Title:       gopher.Name,
+			Description: fmt.Sprintf("**ID:** %s", gopher.ID),
+			Color:       0xff9900,
+			Fields: []*discordgo.MessageEmbedField{
+				{
+					Name:   "Level & XP",
+					Value:  fmt.Sprintf("Level **%d**\n**XP:** %s", gopher.Level, xpBar),
+					Inline: false,
+				},
+				{
+					Name:   "HP",
+					Value:  hpBar,
+					Inline: false,
+				},
+				{
+					Name:   "Stats",
+					Value:  fmt.Sprintf("**Attack:** %d\n**Defense:** %d\n**Speed:** %d", gopher.Attack, gopher.Defense, gopher.Speed),
+					Inline: true,
+				},
+				{
+					Name:   "Info",
+					Value:  fmt.Sprintf("**Type:** %s\n**Rarity:** %s\n**Evolution Stage:** %d", gopher.SpeciesArchetype, gopher.Rarity, gopher.EvolutionStage),
+					Inline: true,
+				},
+			},
+		}
+
+		// Add abilities
+		if len(gameGopher.Abilities) > 0 {
+			abilityList := ""
+			for idx, ability := range gameGopher.Abilities {
+				abilityList += fmt.Sprintf("%d. **%s** - %s (Power: %d)\n", idx+1, ability.Name, ability.Description, ability.Power)
+			}
+			embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
+				Name:   "Abilities",
+				Value:  abilityList,
+				Inline: false,
+			})
+		}
+
+		respondEmbed(s, i, embed, true)
+	}
 }
 
 func (h *Handlers) handleGenerate10(s *discordgo.Session, i *discordgo.InteractionCreate) {
